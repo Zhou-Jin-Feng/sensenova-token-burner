@@ -21,7 +21,8 @@ internal static class AtomicUserFile
         catch (DirectoryNotFoundException) { return null; }
     }
 
-    public static async Task WriteAsync(string path, byte[] data, CancellationToken cancellationToken)
+    public static async Task WriteAsync(string path, byte[] data, CancellationToken cancellationToken,
+        bool waitForReplacement = false)
     {
         if (data.Length > MaximumBytes) throw new LocalStorageException("本地数据超出保存上限。");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -29,8 +30,17 @@ internal static class AtomicUserFile
         try
         {
             await File.WriteAllBytesAsync(temporaryPath, data, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            File.Move(temporaryPath, path, overwrite: true);
+            // Windows替换可能受短暂读锁/文件过滤器占用影响；仅运行检查点启用，最多等待500ms。
+            // 持续权限错误仍失败，不改变ACL；临时文件只写一次，等待不会重复模型请求。
+            for (var attempt = 0; ; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try { File.Move(temporaryPath, path, overwrite: true); break; }
+                catch (Exception exception) when (waitForReplacement && attempt < 10
+                    && exception is IOException or UnauthorizedAccessException
+                    && (exception.HResult & 0xffff) is 5 or 32 or 33)
+                { await Task.Delay(50, cancellationToken).ConfigureAwait(false); }
+            }
         }
         finally { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
     }

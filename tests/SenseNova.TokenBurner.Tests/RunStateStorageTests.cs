@@ -10,6 +10,61 @@ namespace SenseNova.TokenBurner.Tests;
 public sealed class RunStateStorageTests
 {
     [TestMethod]
+    public async Task PersistentReaderLockFailsWithinBoundWithoutReplacingPreviousState()
+    {
+        using var folder = new TestFolder();
+        var store = new JsonRunStateStore(folder.Path);
+        await store.SaveAsync(RunStateDocument.Empty);
+        var path = Path.Combine(folder.Path, "run-state.json");
+        using (var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            var failure = await Assert.ThrowsExactlyAsync<LocalStorageException>(() => store.SaveAsync(Document()));
+            Assert.IsLessThan(TimeSpan.FromSeconds(3), elapsed.Elapsed);
+            Assert.IsTrue(failure.NativeErrorCode is 5 or 32 or 33);
+            Assert.IsNull((await store.LoadAsync())!.CurrentRun);
+        }
+        Assert.AreEqual(0, Directory.GetFiles(folder.Path, "*.tmp").Length);
+    }
+
+    [TestMethod]
+    public async Task CancellingReplacementWaitKeepsPreviousRecordAndCleansOnlyItsTemporaryFile()
+    {
+        using var folder = new TestFolder();
+        var store = new JsonRunStateStore(folder.Path);
+        await store.SaveAsync(RunStateDocument.Empty);
+        var path = Path.Combine(folder.Path, "run-state.json");
+        using (var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+            await Assert.ThrowsAsync<OperationCanceledException>(() => store.SaveAsync(Document(), cancellation.Token));
+            Assert.IsNull((await store.LoadAsync())!.CurrentRun);
+        }
+        Assert.AreEqual(0, Directory.GetFiles(folder.Path, "*.tmp").Length);
+    }
+
+    [TestMethod]
+    public async Task ShortLivedReaderLockDoesNotLoseCheckpointOrReplaceFileBeforeReaderReleases()
+    {
+        using var folder = new TestFolder();
+        var store = new JsonRunStateStore(folder.Path);
+        await store.SaveAsync(RunStateDocument.Empty);
+        var path = Path.Combine(folder.Path, "run-state.json");
+        var next = Document();
+        Task saving;
+        using (var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            saving = store.SaveAsync(next);
+            await Task.Delay(100);
+            Assert.IsFalse(saving.IsCompleted, "临时文件占用不应立即丢弃待保存检查点。");
+            Assert.IsNull((await store.LoadAsync())!.CurrentRun);
+        }
+        await saving.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.AreEqual(next.CurrentRun, (await store.LoadAsync())!.CurrentRun);
+        Assert.AreEqual(0, Directory.GetFiles(folder.Path, "*.tmp").Length);
+    }
+
+    [TestMethod]
     public async Task LegacySettingsUpgradeInMemoryWithoutRewritingOriginal()
     {
         using var folder = new TestFolder();

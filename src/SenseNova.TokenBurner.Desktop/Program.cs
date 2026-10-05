@@ -53,7 +53,15 @@ internal static class Program
         {
             await viewModel.InitializeAsync();
             if (options is null || lifetime.IsCancellationRequested) return;
-            try { await ResourceProbe.RunAsync(options, viewModel, handler, lifetime.Token); }
+            try
+            {
+                if (options.FullEngine)
+                {
+                    form.Enabled = false;
+                    await EngineResourceProbe.RunAsync(options, handler, lifetime.Token);
+                }
+                else await ResourceProbe.RunAsync(options, viewModel, handler, lifetime.Token);
+            }
             catch (Exception) { exitCode = 1; }
             if (!lifetime.IsCancellationRequested) form.Close();
         };

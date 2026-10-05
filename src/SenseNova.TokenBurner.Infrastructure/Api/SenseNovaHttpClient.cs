@@ -1,7 +1,10 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Runtime.CompilerServices;
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Unicode;
 using SenseNova.TokenBurner.Core;
 using SenseNova.TokenBurner.Infrastructure.Storage;
 
@@ -11,6 +14,9 @@ public sealed class SenseNovaHttpClient : ISenseNovaClient, ISenseNovaCompletion
 {
     private const int MaximumResponseBytes = 1_048_576;
     private readonly HttpClient _httpClient;
+    private readonly ConditionalWeakTable<CompletionRequest, Lazy<byte[]>> _completionPayloads = new();
+    private static readonly JsonSerializerOptions CompletionJsonOptions = new(JsonSerializerDefaults.Web)
+    { Encoder = JavaScriptEncoder.Create(UnicodeRanges.All) };
 
     public SenseNovaHttpClient(HttpClient httpClient)
     {
@@ -67,13 +73,17 @@ public sealed class SenseNovaHttpClient : ISenseNovaClient, ISenseNovaCompletion
     {
         CompletionRunExecutor.ValidateRequest(model, completion);
         using var request = CreateRequest(HttpMethod.Post, "chat/completions", credential);
-        request.Content = JsonContent.Create(new
-        {
-            model = model.Id,
-            messages = new[] { new { role = "user", content = completion.Input } },
-            max_tokens = completion.MaximumOutputTokens,
-            stream = false
-        });
+        // 同一不可变大输入只编码一次；弱键随执行器释放，缓存不包含凭据或响应。
+        var payload = _completionPayloads.GetValue(completion, value => new(() =>
+            JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                model = SenseNovaDefaults.RebateModel,
+                messages = new[] { new { role = "user", content = value.Input } },
+                max_tokens = value.MaximumOutputTokens,
+                stream = false
+            }, CompletionJsonOptions), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        request.Content = new ByteArrayContent(payload);
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
         using var document = await SendAsync(request, cancellationToken);
         return ReadUsage(document);
     }

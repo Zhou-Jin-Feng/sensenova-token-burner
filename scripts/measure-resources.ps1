@@ -1,6 +1,7 @@
 #Requires -Version 7.0
 [CmdletBinding()]
 param(
+    [ValidateSet('Short', 'Engine')] [string]$Baseline = 'Short',
     [ValidateRange(1, 3600)] [int]$IdleSeconds = 120,
     [ValidateRange(1, 1800)] [int]$LoadSeconds = 60,
     [ValidateRange(0, 60)] [int]$WarmupSeconds = 10
@@ -33,7 +34,8 @@ $startInfo = [Diagnostics.ProcessStartInfo]::new($executable)
 $startInfo.UseShellExecute = $false
 $startInfo.CreateNoWindow = $true
 $startInfo.WorkingDirectory = $projectRoot
-foreach ($argument in @('--resource-baseline', $reportDirectory, "$IdleSeconds", "$LoadSeconds", "$WarmupSeconds")) {
+$probeFlag = if ($Baseline -eq 'Engine') { '--engine-resource-baseline' } else { '--resource-baseline' }
+foreach ($argument in @($probeFlag, $reportDirectory, "$IdleSeconds", "$LoadSeconds", "$WarmupSeconds")) {
     $startInfo.ArgumentList.Add($argument)
 }
 # 只配置子进程，不改变调用者环境或持久设置。
@@ -55,9 +57,10 @@ $wpfModules = @()
 $windowTitleObserved = $false
 $null = $observedProcessIds.Add($application.Id)
 try {
-    Write-Output "测量启动：预热 $WarmupSeconds 秒，待机 $IdleSeconds 秒，模拟调用 $LoadSeconds 秒。"
+    Write-Output "测量启动：$Baseline，预热 $WarmupSeconds 秒，等待 $IdleSeconds 秒，负载时限 $LoadSeconds 秒。"
+    $loadBudget = if ($Baseline -eq 'Engine') { 2 * $LoadSeconds } else { $LoadSeconds }
     while (-not $application.HasExited) {
-        if ($clock.Elapsed.TotalSeconds -gt ($WarmupSeconds + $IdleSeconds + $LoadSeconds + 30)) {
+        if ($clock.Elapsed.TotalSeconds -gt ($WarmupSeconds + $IdleSeconds + $loadBudget + 30)) {
             throw '测量未按时完成，保留现场资料；脚本不会强制结束进程。'
         }
         $remainingMilliseconds = [Math]::Max(1, [int](($nextSampleSeconds - $clock.Elapsed.TotalSeconds) * 1000))
@@ -103,7 +106,7 @@ try {
             CpuPercent=$cpuInterval.CpuPercent
             WorkingSetMiB=$workingSetBytes / 1MB; PrivateMiB=$privateBytes / 1MB
             ProcessLifetimePeakWorkingSetMiB=$processPeakBytes / 1MB
-            IncludeCpu=($phase -eq $previousPhase -and $phase -in @('Idle','Load'))
+            IncludeCpu=($phase -eq $previousPhase -and $phase -in @('Idle','Load','LoadPlain','LoadPersisted'))
         })
         $previousSeconds=$elapsed; $previousCpuSeconds=$currentCpuSeconds; $previousPhase=$phase
         if ($elapsed -ge $nextProgressSeconds) {
@@ -116,7 +119,8 @@ try {
     $finalState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     if ($finalState.Frontend -ne 'WinForms') { throw '程序不是当前 WinForms 测量版本，请重新构建。' }
     if ($application.ExitCode -ne 0 -or $finalState.Phase -ne 'Completed') { throw '应用测量提前结束，当前基线未验证。' }
-    $scenarios = foreach ($name in @('Idle','Load')) {
+    $scenarioNames = if ($Baseline -eq 'Engine') { @('LoadPlain','LoadPersisted','Idle') } else { @('Idle','Load') }
+    $scenarios = foreach ($name in $scenarioNames) {
         $rows = @($samples | Where-Object { $_.Phase -eq $name })
         $cpuRows = @($rows | Where-Object IncludeCpu)
         if ($rows.Count -lt 2 -or $cpuRows.Count -eq 0) { throw "场景 $name 采样不足，请增加时长。" }
@@ -139,7 +143,7 @@ try {
     $report = [PSCustomObject]@{
         SchemaVersion=2; TimestampUtc=[DateTime]::UtcNow.ToString('o'); Build='Release'
         CpuMeasurement='Fractional process CPU seconds, clamped as double; whole-machine percent'
-        BaselineKind='Window with short serial in-process HTTP mock'; Frontend='WinForms'
+        BaselineKind=$(if ($Baseline -eq 'Engine') { 'Window with full concurrent HTTP mock, persistent history and five-hour schedule wait' } else { 'Window with short serial in-process HTTP mock' }); Frontend='WinForms'
         OperatingSystem=[Environment]::OSVersion.VersionString; RuntimeVersion=$finalState.RuntimeVersion
         LogicalProcessors=[Environment]::ProcessorCount; SampleIntervalSeconds=1
         WarmupSeconds=$WarmupSeconds; IdleSeconds=$IdleSeconds; LoadSeconds=$LoadSeconds
@@ -150,7 +154,8 @@ try {
         GraphicsDriverModules=$graphicsDriverModules
         WindowTitleObserved=$windowTitleObserved
         LoadedWpfModules=$wpfModules
-        Limitations=@('Short mock requests only; no full target, long input, tray or real API verification.', 'Phase transition CPU samples excluded; one-second sampling can miss brief memory peaks.')
+        Engine=$(if ($Baseline -eq 'Engine') { $finalState.Engine } else { $null })
+        Limitations=@($(if ($Baseline -eq 'Engine') { 'Synthetic input and virtual usage; no real API, tray or installed release verification. Plain round runs before persisted round; caches and GC prevent a strict causal disk-cost comparison.' } else { 'Short mock requests only; no full target, long input, tray or real API verification.' }), 'Phase transition CPU samples excluded; one-second sampling can miss brief memory peaks. Process IO write counters are logical IO and do not measure physical disk or power-loss durability.')
     }
     $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $reportDirectory 'summary.json') -Encoding utf8
     $scenarios | Format-Table Name,Samples,AverageCpuPercent,MaximumSampleWorkingSetMiB,WorkingSetTargetMet,IdleCpuTargetMet -AutoSize | Out-String | Write-Output

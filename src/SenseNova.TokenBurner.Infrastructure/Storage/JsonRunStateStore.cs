@@ -31,8 +31,9 @@ public sealed class JsonRunStateStore(string directory) : IRunStateStore
     {
         ArgumentNullException.ThrowIfNull(document);
         document.Validate();
-        try { await AtomicUserFile.WriteAsync(_path, JsonSerializer.SerializeToUtf8Bytes(document, Options), cancellationToken); }
+        try { await AtomicUserFile.WriteAsync(_path, JsonSerializer.SerializeToUtf8Bytes(document, Options), cancellationToken,
+            waitForReplacement: true); }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        { throw new LocalStorageException("运行记录无法保存，已阻止新增请求。"); }
+        { throw new LocalStorageException("运行记录无法保存，已阻止新增请求。", exception.HResult & 0xffff); }
     }
 }

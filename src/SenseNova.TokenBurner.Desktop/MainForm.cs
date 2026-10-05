@@ -84,7 +84,7 @@ internal sealed class MainForm : Form
 
         var schedule = CreateCard("运行间隔（小时）");
         schedule.Controls.Add(_interval);
-        schedule.Controls.Add(new Label { Text = "默认 5 小时，当前仅保存配置；计划运行未启用，调度待实现。", AutoSize = true });
+        schedule.Controls.Add(new Label { Text = "默认 5 小时，当前仅保存配置；计划开关将在完整面板中接入。", AutoSize = true });
         schedule.Controls.Add(_save);
         content.Controls.Add(schedule);
         layout.Controls.Add(content, 0, 1);

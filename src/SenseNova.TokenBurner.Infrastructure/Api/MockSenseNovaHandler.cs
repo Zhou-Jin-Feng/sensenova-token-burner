@@ -43,7 +43,9 @@ public sealed class MockSenseNovaHandler(MockScenario scenario = MockScenario.Su
                 """);
         if (request.Method == HttpMethod.Post && request.RequestUri.AbsolutePath == "/v1/chat/completions")
         {
-            using var payload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            // 直接读UTF-8 JSON，避免完整负载先复制为大UTF-16文本再重新编码。
+            await using var stream = await request.Content!.ReadAsStreamAsync(cancellationToken);
+            using var payload = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
             var root = payload.RootElement;
             var outputLimit = root.GetProperty("max_tokens").GetInt32();
             var messages = root.GetProperty("messages");

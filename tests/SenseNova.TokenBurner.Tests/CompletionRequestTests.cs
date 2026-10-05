@@ -19,6 +19,53 @@ public sealed class CompletionRequestTests
         => new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
     [TestMethod]
+    public async Task ConcurrentReusedInputKeepsIndependentCredentialsAndValidUtf8Payload()
+    {
+        const string input = "中文输入 😀 \"引号\"\n<script>&\u2028";
+        var completion = new CompletionRequest(input, 1024, 100);
+        var messages = new System.Collections.Concurrent.ConcurrentDictionary<HttpRequestMessage, byte>();
+        using var http = Http(new TestHttpHandler(async (request, cancellationToken) =>
+        {
+            Assert.IsTrue(messages.TryAdd(request, 0));
+            Assert.IsTrue(request.Headers.Authorization!.Parameter is "virtual-first-key" or "virtual-second-key");
+            Assert.AreEqual("application/json", request.Content!.Headers.ContentType!.MediaType);
+            Assert.AreEqual("utf-8", request.Content.Headers.ContentType.CharSet);
+            var bytes = await request.Content.ReadAsByteArrayAsync(cancellationToken);
+            Assert.IsTrue(Encoding.UTF8.GetString(bytes).Contains("中文输入", StringComparison.Ordinal));
+            using var payload = JsonDocument.Parse(bytes);
+            Assert.AreEqual(input, payload.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
+            Assert.IsFalse(Encoding.UTF8.GetString(bytes).Contains("virtual-first-key", StringComparison.Ordinal));
+            await Task.Delay(1, cancellationToken);
+            return Reply("{\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}");
+        }));
+        var client = new SenseNovaHttpClient(http);
+        var tasks = Enumerable.Range(0, 6).Select(index => client.CompleteAsync(
+            index % 2 == 0 ? "virtual-first-key" : "virtual-second-key", Model, completion));
+        var results = await Task.WhenAll(tasks);
+        Assert.AreEqual(6, messages.Count);
+        Assert.IsTrue(results.All(result => result == new TokenUsage(1, 2, 3)));
+    }
+
+    [TestMethod]
+    public async Task ChangedImmutableRequestDoesNotReusePreviousInputOrOutputLimit()
+    {
+        var observed = new List<(string? Input, int Output)>();
+        using var http = Http(new TestHttpHandler(async (request, token) =>
+        {
+            using var payload = JsonDocument.Parse(await request.Content!.ReadAsByteArrayAsync(token));
+            observed.Add((payload.RootElement.GetProperty("messages")[0].GetProperty("content").GetString(),
+                payload.RootElement.GetProperty("max_tokens").GetInt32()));
+            return Reply("{\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}");
+        }));
+        var client = new SenseNovaHttpClient(http);
+        var initial = new CompletionRequest("first", 1024, 100);
+        await client.CompleteAsync(MockCredential.Value, Model, initial);
+        await client.CompleteAsync(MockCredential.Value, Model, initial with { Input = "第二笔", MaximumOutputTokens = 16 });
+        Assert.AreEqual(("first", 1024), observed[0]);
+        Assert.AreEqual(("第二笔", 16), observed[1]);
+    }
+
+    [TestMethod]
     public async Task FullBaselinePayloadUsesLargeInput1024OutputAndSharedUsageParser()
     {
         var completion = MockCompletionInput.Create(170000);

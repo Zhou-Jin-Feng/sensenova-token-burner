@@ -32,4 +32,8 @@ public interface ICredentialStore
     Task SaveAsync(string credential, CancellationToken cancellationToken = default);
 }
 
-public sealed class LocalStorageException(string message) : Exception(message);
+public sealed class LocalStorageException(string message, int? nativeErrorCode = null) : Exception(message)
+{
+    // 仅系统错误编号，帮助区分文件占用与权限；不保存原始异常/路径或文件内容。
+    public int? NativeErrorCode { get; } = nativeErrorCode;
+}

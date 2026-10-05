@@ -10,13 +10,15 @@ namespace SenseNova.TokenBurner.Desktop.Diagnostics;
 
 public sealed record ResourceProbeOptions(string OutputDirectory, int IdleSeconds, int LoadSeconds, int WarmupSeconds)
 {
+    public bool FullEngine { get; init; }
     public static ResourceProbeOptions? Parse(string[] arguments)
     {
-        if (arguments.Length == 0 || arguments[0] != "--resource-baseline") return null;
+        if (arguments.Length == 0 || arguments[0] is not ("--resource-baseline" or "--engine-resource-baseline")) return null;
         if (arguments.Length != 5 || !Path.IsPathFullyQualified(arguments[1]))
             throw new ArgumentException("资源测量参数无效。");
         return new(Path.GetFullPath(arguments[1]), ReadSeconds(arguments[2], 1, 3600),
-            ReadSeconds(arguments[3], 1, 1800), ReadSeconds(arguments[4], 0, 60));
+            ReadSeconds(arguments[3], 1, 1800), ReadSeconds(arguments[4], 0, 60))
+        { FullEngine = arguments[0] == "--engine-resource-baseline" };
     }
 
     private static int ReadSeconds(string value, int minimum, int maximum)
