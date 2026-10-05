@@ -1,0 +1,10 @@
+# Agent 工作资料
+agent/
+
+# 本地凭据与运行数据
+.env
+.env.*
+!.env.example
+*.log
+.local/
+user-data/
