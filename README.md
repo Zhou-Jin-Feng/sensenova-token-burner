@@ -2,7 +2,7 @@
 
 面向 Windows 的 SenseNova Token Plan 用量与运行管理面板，计划提供可直接安装的客户端。
 
-当前处于基础架构准备阶段，尚无可运行应用或安装包。
+当前已有可运行的 WPF 模拟面板，支持配置保存、Windows 用户加密测试凭据、模拟模型读取和单次模拟用量，仍处于基础架构阶段，尚无安装包。
 
 技术与平台已确认：C# + WPF、.NET 10 LTS、Windows 11 x64；安装包采用自包含发布，携带所需运行时。资源占用与安装验收尚未进行。
 
@@ -12,7 +12,7 @@
 
 计划运行拟支持设置“每隔 N 小时运行一次”，默认间隔 5 小时。每轮按选定比例执行，同一任务不重叠，面板显示下次运行时间；用户可关闭计划运行。
 
-已确定的使用规则：API key 按当前 Windows 用户加密保存；首次手动启用计划，重开时询问恢复；关闭窗口进入托盘继续运行，托盘提供停止和退出。上述行为尚待实现与验收。
+已确定的正式版使用规则：API key 按当前 Windows 用户加密保存；首次手动启用计划，重开时询问恢复；关闭窗口进入托盘继续运行，托盘提供停止和退出。当前用虚拟 key 验证加密保存；计划和托盘尚未实现，模拟面板关闭即退出。
 
 轻量化验收目标：待机平均 CPU ≤1%、全部应用进程总工作集 ≤100 MiB，运行时总工作集 ≤150 MiB。这些是待测目标，尚无资源测量结果。
 
@@ -24,6 +24,30 @@
 
 - [需求与实现方案](docs/需求与实现方案.md)
 - [项目任务清单](docs/项目任务清单.md)
+- [基础架构与开发](docs/基础架构与开发.md)
 - [SenseNova 官方文档](https://platform.sensenova.cn/docs)
 
 本仓库不得包含真实 API key、个人账户数据或运行日志。
+
+## 开发环境
+
+开发使用 .NET SDK `10.0.401`，由根目录 `global.json` 固定版本。普通用户使用后续自包含安装包，无需安装 SDK。
+
+开发者可从 [微软发布元数据](https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json) 获取对应 Windows x64 ZIP，按其中的 SHA-512 校验后解压到 `.local/dotnet`，或使用本机同版本 SDK。项目内工具与缓存不进入 Git。
+
+2026-10-05 已验证项目内 SDK、Release 构建（0 警告/0 错误）、63 项测试和实际 WPF 窗口操作。模拟面板支持比例滑条/预设、小时配置保存、DPAPI 虚拟凭据保存与重开恢复、模型读取和 128 输入 + 8 输出 = 136 tokens 的单次模拟调用；0% 禁用消耗请求。真实 API、运行引擎、调度、托盘、资源测量和安装验收尚未进行。
+
+在项目根目录使用 PowerShell 开发命令；脚本临时配置 SDK 和缓存目录，并关闭 CLI 遥测与自动开发证书生成：
+
+```powershell
+& .\scripts\dev.ps1 restore
+& .\scripts\dev.ps1 build
+& .\scripts\dev.ps1 test
+& .\scripts\dev.ps1 run
+```
+
+启动后点击“读取模拟模型”，选择活动模型，再点击“模拟调用一次”。“保存模拟配置”只保存比例、间隔、模型及凭据保存选项；默认间隔 5 小时，当前不会执行定时任务。单次模拟调用不会执行面板显示的完整 token 目标，也没有真实扣费或返赠。
+
+开发脚本把模拟资料写入 `.local/mock-profile/`：`mock-settings.json` 不含 key，`mock-credential.dat` 为当前 Windows 用户 DPAPI 密文。直接启动编译后的程序时，默认目录为 `%LOCALAPPDATA%/SenseNova.TokenBurner/Demo/`。内置 mock 是进程内 HTTP 终端处理器，不访问网络、不监听端口、不启动额外服务；当前没有真实 key 输入入口。
+
+新增或升级依赖时有意执行 `& .\scripts\dev.ps1 restore -UpdateLockFiles`，复查锁文件后再执行普通 locked restore。更多接口与验证边界见 [基础架构与开发](docs/基础架构与开发.md)。

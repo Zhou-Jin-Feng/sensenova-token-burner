@@ -1,0 +1,129 @@
+<Window x:Class="SenseNova.TokenBurner.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SenseNova Token Burner · 模拟面板"
+        Width="1040" Height="850" MinWidth="800" MinHeight="650"
+        Closing="OnClosing"
+        WindowStartupLocation="CenterScreen" Background="#F3F7F8"
+        FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="14">
+    <Grid Margin="32,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid Margin="0,0,0,22">
+            <StackPanel>
+                <TextBlock Text="SENSENOVA" Foreground="{StaticResource Accent}"
+                           FontSize="12" FontWeight="SemiBold" />
+                <TextBlock Text="用量与运行管理" FontSize="28" FontWeight="SemiBold" Margin="0,7,0,5" />
+                <TextBlock Text="保存配置、读取模型，体验一次模拟调用。" Foreground="{StaticResource TextSecondary}" />
+            </StackPanel>
+            <Border HorizontalAlignment="Right" VerticalAlignment="Top" Background="#DFEEEB"
+                    CornerRadius="12" Padding="13,6" Margin="0,8,0,0">
+                <TextBlock Text="模拟模式 · 无真实扣费" Foreground="#08736C" FontSize="12" />
+            </Border>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel>
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16" IsEnabled="{Binding IsIdle}">
+                    <StackPanel>
+                        <TextBlock Text="服务与模型" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,16" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Margin="0,0,16,0">
+                                <TextBlock Text="官方服务地址" Foreground="{StaticResource TextSecondary}" FontSize="12" />
+                                <TextBlock Text="{Binding BaseUrl}" Margin="0,8,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Text="模型（模拟列表）" Foreground="{StaticResource TextSecondary}" FontSize="12" />
+                                <ComboBox ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
+                                          DisplayMemberPath="DisplayName" Margin="0,8,0,8" Padding="6"
+                                          AutomationProperties.Name="模拟模型" />
+                                <Button Content="读取模拟模型" Command="{Binding ReadModelsCommand}" HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock Text="{Binding ModelCapabilityLabel}" Foreground="{StaticResource TextSecondary}"
+                                   Margin="0,14,0,0" FontSize="12" TextWrapping="Wrap" />
+                        <TextBlock Text="当前使用内置虚拟 key；真实 key 输入将在后续步骤开放。"
+                                   Foreground="{StaticResource TextSecondary}" Margin="0,10,0,0" TextWrapping="Wrap" />
+                        <CheckBox Content="按当前 Windows 用户加密保存测试凭据"
+                                  IsChecked="{Binding RememberCredential, Mode=TwoWay}" Margin="0,12,0,6" />
+                        <TextBlock Text="{Binding CredentialStatus}" FontSize="12" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16" IsEnabled="{Binding IsIdle}">
+                    <StackPanel>
+                        <Grid>
+                            <TextBlock Text="预计专属积分消耗比例" FontSize="17" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding PercentageLabel}" HorizontalAlignment="Right"
+                                       Foreground="{StaticResource Accent}" FontSize="26" FontWeight="SemiBold" />
+                        </Grid>
+                        <Slider Minimum="0" Maximum="95" TickFrequency="1" IsSnapToTickEnabled="True"
+                                Value="{Binding Percentage, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                Margin="0,22,0,12" AutomationProperties.Name="预计消耗比例" />
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,20">
+                            <Button Content="25%" Command="{Binding SelectPresetCommand}" CommandParameter="25" Margin="0,0,10,0" />
+                            <Button Content="50%" Command="{Binding SelectPresetCommand}" CommandParameter="50" Margin="0,0,10,0" />
+                            <Button Content="75%" Command="{Binding SelectPresetCommand}" CommandParameter="75" Margin="0,0,10,0" />
+                            <Button Content="95%" Command="{Binding SelectPresetCommand}" CommandParameter="95" />
+                        </StackPanel>
+                        <Border Background="#F3F8F8" CornerRadius="8" Padding="16">
+                            <StackPanel>
+                                <TextBlock Text="本轮 token 目标" Foreground="{StaticResource TextSecondary}" FontSize="12" />
+                                <TextBlock Text="{Binding TargetTokensLabel}" FontSize="23" FontWeight="SemiBold" Margin="0,6,0,4" />
+                                <TextBlock Text="{Binding SelectionHint}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                        <TextBlock Text="比例来自经验校准，实际积分扣减与返赠以官方账户记录为准。"
+                                   Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" IsEnabled="{Binding IsIdle}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="运行间隔（小时）" FontSize="12" Foreground="{StaticResource TextSecondary}" />
+                            <TextBox Text="{Binding IntervalHoursText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     Width="140" HorizontalAlignment="Left" Padding="8" Margin="0,7,0,0"
+                                     AutomationProperties.Name="运行间隔小时" />
+                            <TextBlock Text="默认 5 小时，可输入正数；当前仅保存配置。" FontSize="12"
+                                       Margin="0,8,16,0" TextWrapping="Wrap" Foreground="{StaticResource TextSecondary}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="计划运行" FontSize="12" Foreground="{StaticResource TextSecondary}" />
+                            <TextBlock Text="未启用 · 调度待实现" FontSize="18" Margin="0,7,0,10" />
+                            <Button Content="保存模拟配置" Command="{Binding SaveConfigurationCommand}" HorizontalAlignment="Left" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+        <Grid Grid.Row="2" Margin="0,18,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding UsageLabel}" Foreground="{StaticResource TextSecondary}" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,0" />
+                <TextBlock Text="只模拟一次短请求；不执行完整 token 目标。关闭窗口取消操作并退出。"
+                           Foreground="{StaticResource TextSecondary}" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,0" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Content="模拟调用一次" Command="{Binding ProbeCommand}" Margin="0,0,8,0" />
+                <Button Content="取消" Command="{Binding CancelCommand}" Margin="0,0,8,0" />
+                <Button Content="退出" Click="ClosePreview" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

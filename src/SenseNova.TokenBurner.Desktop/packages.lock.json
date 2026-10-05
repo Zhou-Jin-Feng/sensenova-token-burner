@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0-windows7.0": {
+      "sensenova.tokenburner.core": {
+        "type": "Project"
+      },
+      "sensenova.tokenburner.infrastructure": {
+        "type": "Project",
+        "dependencies": {
+          "SenseNova.TokenBurner.Core": "[1.0.0, )"
+        }
+      }
+    }
+  }
+}

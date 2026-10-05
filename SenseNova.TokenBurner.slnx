@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/SenseNova.TokenBurner.Core/SenseNova.TokenBurner.Core.csproj" />
+  <Project Path="src/SenseNova.TokenBurner.Infrastructure/SenseNova.TokenBurner.Infrastructure.csproj" />
+  <Project Path="src/SenseNova.TokenBurner.Desktop/SenseNova.TokenBurner.Desktop.csproj" />
+  <Project Path="tests/SenseNova.TokenBurner.Tests/SenseNova.TokenBurner.Tests.csproj" />
+</Solution>

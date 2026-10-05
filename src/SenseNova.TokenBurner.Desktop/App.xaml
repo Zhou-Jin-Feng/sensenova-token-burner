@@ -1,0 +1,29 @@
+<Application x:Class="SenseNova.TokenBurner.Desktop.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnMainWindowClose">
+    <Application.Resources>
+        <SolidColorBrush x:Key="TextPrimary" Color="#152C3B" />
+        <SolidColorBrush x:Key="TextSecondary" Color="#59717E" />
+        <SolidColorBrush x:Key="Accent" Color="#087F78" />
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        </Style>
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="Padding" Value="24" />
+            <Setter Property="BorderBrush" Value="#DCE6EA" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#EDF5F4" />
+            <Setter Property="Foreground" Value="#086D66" />
+            <Setter Property="BorderBrush" Value="#C8DEDB" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="22,10" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+    </Application.Resources>
+</Application>

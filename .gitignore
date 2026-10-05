@@ -8,3 +8,11 @@ agent/
 *.log
 .local/
 user-data/
+
+# .NET 构建与本机编辑器文件
+**/bin/
+**/obj/
+TestResults/
+.vs/
+*.user
+*.suo
