@@ -15,7 +15,9 @@ public static class MockCredential
 public sealed class MockSenseNovaHandler(MockScenario scenario = MockScenario.Success, TimeSpan? delay = null) : HttpMessageHandler
 {
     private int _requestCount;
+    private int _successfulProbeCount;
     public int RequestCount => Volatile.Read(ref _requestCount);
+    public int SuccessfulProbeCount => Volatile.Read(ref _successfulProbeCount);
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -44,6 +46,7 @@ public sealed class MockSenseNovaHandler(MockScenario scenario = MockScenario.Su
                 || payload.RootElement.GetProperty("stream").GetBoolean()
                 || payload.RootElement.GetProperty("max_tokens").GetInt32() != Core.RequestBaseline.ProbeOutputTokens)
                 return Reply(HttpStatusCode.BadRequest, "{}");
+            if (scenario != MockScenario.MissingUsage) Interlocked.Increment(ref _successfulProbeCount);
             return Reply(HttpStatusCode.OK, scenario == MockScenario.MissingUsage ? "{\"choices\":[]}" :
                 "{\"choices\":[],\"usage\":{\"prompt_tokens\":128,\"completion_tokens\":8,\"total_tokens\":136}}");
         }
