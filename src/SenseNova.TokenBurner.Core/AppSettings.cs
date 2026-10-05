@@ -2,7 +2,8 @@ namespace SenseNova.TokenBurner.Core;
 
 public sealed record AppSettings
 {
-    public int SchemaVersion { get; init; } = 1;
+    public const int CurrentSchemaVersion = 2;
+    public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public int Percentage { get; init; } = ConsumptionPolicy.DefaultPercentage;
     public decimal IntervalHours { get; init; } = RunDefaults.IntervalHours;
     public string ModelId { get; init; } = "sensenova-6.8-flash-lite";
@@ -10,7 +11,7 @@ public sealed record AppSettings
 
     public void Validate()
     {
-        if (SchemaVersion != 1) throw new ArgumentException("配置版本不受支持。");
+        if (SchemaVersion is not (1 or CurrentSchemaVersion)) throw new ArgumentException("配置版本不受支持。");
         _ = ConsumptionPolicy.GetTargetTokens(Percentage);
         if (IntervalHours <= 0 || IntervalHours > (decimal)TimeSpan.MaxValue.TotalHours)
             throw new ArgumentException("运行间隔必须为有效的正数小时。");

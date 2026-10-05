@@ -27,7 +27,7 @@ public sealed class StorageTests
 
     [TestMethod]
     [DataRow("not-json")]
-    [DataRow("{\"SchemaVersion\":2}")]
+    [DataRow("{\"SchemaVersion\":3}")]
     [DataRow("{\"Percentage\":96}")]
     [DataRow("{\"IntervalHours\":0}")]
     [DataRow("{\"ModelId\":null}")]

@@ -7,6 +7,8 @@ public sealed class SingleRunEngine
     private readonly IRunRequestExecutor _executor;
     private readonly RunProtectionOptions _protection;
     private readonly TimeProvider _time;
+    private readonly IRunCheckpoint? _checkpoint;
+    private bool _persistenceFailed;
     private RunSnapshot _snapshot = RunSnapshot.Idle;
     private Session? _session;
 
@@ -19,7 +21,12 @@ public sealed class SingleRunEngine
         _time = timeProvider ?? TimeProvider.System;
     }
 
+    internal SingleRunEngine(IRunRequestExecutor executor, RunProtectionOptions? protection,
+        TimeProvider timeProvider, IRunCheckpoint checkpoint) : this(executor, protection, timeProvider)
+        => _checkpoint = checkpoint;
+
     public RunSnapshot Snapshot { get { lock (_gate) return _snapshot; } }
+    internal bool HasActiveRun { get { lock (_gate) return _session is { Completion.Task.IsCompleted: false }; } }
 
     // 同一 Core 内的调度接缝：异常立即唤醒计划，不靠循环轮询，也不暴露原始异常。
     internal Task ProtectionTriggered
@@ -32,21 +39,23 @@ public sealed class SingleRunEngine
         ArgumentNullException.ThrowIfNull(parameters);
         parameters.Validate();
         _executor.ValidateParameters(parameters);
+        _checkpoint?.EnsureCanStart();
         Session session;
         lock (_gate)
         {
             if (_session is { Completion.Task.IsCompleted: false })
                 throw new InvalidOperationException("已有运行尚未结束。");
-            if (_snapshot.ReviewRequired)
+            if (_snapshot.ReviewRequired || _persistenceFailed)
                 throw new InvalidOperationException("上一轮仍需人工核查，确认后才能显式开始新轮。");
             session = new();
             _session = session;
             _snapshot = new(RunState.Running, parameters, new(0, 0, 0), 0, 0, 0, null);
-            if (cancellationToken.IsCancellationRequested || parameters.TargetTokens == 0)
+            if (_checkpoint is null && (cancellationToken.IsCancellationRequested || parameters.TargetTokens == 0))
             {
                 FinishLocked(session, cancellationToken.IsCancellationRequested
                     ? RunEndReason.LifecycleCancellation : RunEndReason.TargetReached);
                 session.AbortRequests.Dispose();
+                session.Completion.TrySetResult(_snapshot);
                 return session.Completion.Task;
             }
         }
@@ -82,7 +91,7 @@ public sealed class SingleRunEngine
     {
         lock (_gate)
         {
-            if (_session is { Completion.Task.IsCompleted: false } || !_snapshot.ReviewRequired) return false;
+            if (_session is { Completion.Task.IsCompleted: false } || !_snapshot.ReviewRequired || _persistenceFailed) return false;
             _snapshot = _snapshot with { ReviewRequired = false };
             return true;
         }
@@ -153,6 +162,11 @@ public sealed class SingleRunEngine
         try
         {
             var pending = new List<Task<RequestOutcome>>(parameters.MaximumConcurrency);
+            if (_checkpoint is not null)
+            {
+                try { await _checkpoint.BeginAsync(Snapshot).ConfigureAwait(false); }
+                catch (Exception) { BlockStorage(); }
+            }
             while (true)
             {
                 Task? resume = null;
@@ -163,6 +177,7 @@ public sealed class SingleRunEngine
                     var outcome = await task.ConfigureAwait(false);
                     pending.Remove(task);
                     lock (_gate) SettleLocked(outcome, parameters, session);
+                    await SaveCheckpointAsync().ConfigureAwait(false);
                 }
                 while (true)
                 {
@@ -181,6 +196,25 @@ public sealed class SingleRunEngine
                             };
                     }
                     if (!dispatch) break;
+                    if (!await SaveCheckpointAsync().ConfigureAwait(false))
+                    {
+                        lock (_gate) ReleaseUnsentReservationLocked(parameters);
+                        break;
+                    }
+                    lock (_gate)
+                    {
+                        // 暂停/停止可能发生在落盘等待中；已预留但未发送仍属 NotSent。
+                        if (_snapshot.State != RunState.Running || cancellationToken.IsCancellationRequested)
+                        {
+                            ReleaseUnsentReservationLocked(parameters);
+                            dispatch = false;
+                        }
+                    }
+                    if (!dispatch)
+                    {
+                        await SaveCheckpointAsync().ConfigureAwait(false);
+                        break;
+                    }
                     pending.Add(ExecuteRequestAsync(parameters, session, cancellationToken));
                     if (pending.Any(task => task.IsCompleted)) break;
                 }
@@ -247,7 +281,66 @@ public sealed class SingleRunEngine
                     await Task.WhenAny(pending).ConfigureAwait(false);
             }
         }
-        finally { session.AbortRequests.Dispose(); }
+        finally
+        {
+            // 落盘等待中停止宽限可能到期；不能把较早的 Completed 记录当作最终状态。
+            while (true)
+            {
+                RunSnapshot final;
+                lock (_gate)
+                {
+                    if (_snapshot.State == RunState.Stopping)
+                        FinishLocked(session, _snapshot.EndReason ?? RunEndReason.Failure);
+                    final = _snapshot;
+                }
+                await SaveCheckpointAsync(final).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    if (_persistenceFailed) _snapshot = _snapshot with { State = RunState.Faulted, EndReason = RunEndReason.Failure };
+                    else if (_snapshot != final) continue;
+                    session.Completion.TrySetResult(_snapshot);
+                    break;
+                }
+            }
+            session.AbortRequests.Dispose();
+        }
+    }
+
+    private void ReleaseUnsentReservationLocked(RunParameters parameters)
+        => _snapshot = _snapshot with
+        {
+            InFlightRequests = _snapshot.InFlightRequests - 1,
+            ReservedTokens = _snapshot.ReservedTokens - parameters.RequestTokenReservation,
+            NotSentRequests = _snapshot.NotSentRequests + 1
+        };
+
+    private async Task<bool> SaveCheckpointAsync(RunSnapshot? snapshot = null)
+    {
+        if (_checkpoint is null) return true;
+        lock (_gate) { if (_persistenceFailed) return false; }
+        try { await _checkpoint.SaveAsync(snapshot ?? Snapshot).ConfigureAwait(false); return true; }
+        catch (Exception) { BlockStorage(); return false; }
+    }
+
+    internal void BlockStorage()
+    {
+        lock (_gate)
+        {
+            _persistenceFailed = true;
+            _snapshot = _snapshot with
+            {
+                State = _session is { Completion.Task.IsCompleted: false } ? RunState.Stopping : RunState.Faulted,
+                Failure = RunFailureKind.StorageFailure, LastFailure = RunFailureKind.StorageFailure,
+                ReviewRequired = true, EndReason = RunEndReason.Failure
+            };
+            if (_session is not null)
+            {
+                _session.RetryPending = false;
+                _session.ResumeSignal?.TrySetResult();
+                _session.ProtectionSignal.TrySetResult();
+                _session.StopSignal.TrySetResult();
+            }
+        }
     }
 
     private bool CanDispatchLocked(RunParameters parameters)
@@ -416,7 +509,6 @@ public sealed class SingleRunEngine
             _ => RunState.Completed
         };
         _snapshot = _snapshot with { State = state, EndReason = reason, IsBackingOff = false };
-        session.Completion.TrySetResult(_snapshot);
     }
 
     private sealed class Session

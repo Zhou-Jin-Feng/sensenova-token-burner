@@ -21,7 +21,8 @@ public sealed class JsonUserSettingsStore(string directory) : IUserSettingsStore
             if (data is null) return null;
             var settings = JsonSerializer.Deserialize<AppSettings>(data, Options) ?? throw new JsonException();
             settings.Validate();
-            return settings;
+            // 读取旧版本仅升级内存；原文件在用户下一次显式保存前保持原样。
+            return settings with { SchemaVersion = AppSettings.CurrentSchemaVersion };
         }
         catch (Exception exception) when (exception is JsonException or ArgumentException or IOException or UnauthorizedAccessException)
         { throw new LocalStorageException("配置文件无法读取或格式无效，请检查后重新保存。"); }
@@ -31,7 +32,8 @@ public sealed class JsonUserSettingsStore(string directory) : IUserSettingsStore
     {
         ArgumentNullException.ThrowIfNull(settings);
         settings.Validate();
-        try { await AtomicUserFile.WriteAsync(_path, JsonSerializer.SerializeToUtf8Bytes(settings, Options), cancellationToken); }
+        try { await AtomicUserFile.WriteAsync(_path, JsonSerializer.SerializeToUtf8Bytes(
+            settings with { SchemaVersion = AppSettings.CurrentSchemaVersion }, Options), cancellationToken); }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         { throw new LocalStorageException("配置无法保存，请检查数据目录的可写权限。"); }
     }

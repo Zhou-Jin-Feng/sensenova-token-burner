@@ -44,7 +44,7 @@ public enum RunFailureKind
 {
     RequestFailed, Canceled, UsageUnavailable, InvalidUsage, UsageOverflow, NoProgress, BudgetEstimateExceeded,
     Authentication, InvalidRequest, ModelUnavailable, RateOrQuotaLimit, Transient, Protocol, Network,
-    RequestTimeout, StopTimeout, RetryLimitReached
+    RequestTimeout, StopTimeout, RetryLimitReached, StorageFailure
 }
 
 public enum RunEndReason { TargetReached, BudgetRemainder, UserStop, LifecycleCancellation, Failure }
