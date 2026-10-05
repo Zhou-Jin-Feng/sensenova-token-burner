@@ -4,9 +4,9 @@ using SenseNova.TokenBurner.Core;
 
 namespace SenseNova.TokenBurner.Infrastructure.Storage;
 
-public sealed class JsonUserSettingsStore(string directory) : IUserSettingsStore
+public sealed class JsonUserSettingsStore(string directory, StorageProfile profile = StorageProfile.Mock) : IUserSettingsStore
 {
-    private readonly string _path = Path.Combine(Path.GetFullPath(directory), "mock-settings.json");
+    private readonly string _path = Path.Combine(Path.GetFullPath(directory), profile == StorageProfile.User ? "settings.json" : "mock-settings.json");
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,

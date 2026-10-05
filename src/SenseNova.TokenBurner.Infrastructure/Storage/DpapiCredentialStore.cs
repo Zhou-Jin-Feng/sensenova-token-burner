@@ -4,10 +4,11 @@ using SenseNova.TokenBurner.Core;
 
 namespace SenseNova.TokenBurner.Infrastructure.Storage;
 
-public sealed class DpapiCredentialStore(string directory) : ICredentialStore
+public sealed class DpapiCredentialStore(string directory, StorageProfile profile = StorageProfile.Mock) : ICredentialStore
 {
-    private readonly string _path = Path.Combine(Path.GetFullPath(directory), "mock-credential.dat");
-    private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("SenseNova.TokenBurner.MockProfile.v1");
+    private readonly string _path = Path.Combine(Path.GetFullPath(directory), profile == StorageProfile.User ? "api-key.dat" : "mock-credential.dat");
+    private readonly byte[] _entropy = Encoding.UTF8.GetBytes(profile == StorageProfile.User
+        ? "SenseNova.TokenBurner.UserProfile.v1" : "SenseNova.TokenBurner.MockProfile.v1");
 
     public async Task SaveAsync(string credential, CancellationToken cancellationToken = default)
     {
@@ -15,11 +16,11 @@ public sealed class DpapiCredentialStore(string directory) : ICredentialStore
         var plaintext = Encoding.UTF8.GetBytes(credential);
         try
         {
-            var ciphertext = ProtectedData.Protect(plaintext, Entropy, DataProtectionScope.CurrentUser);
+            var ciphertext = ProtectedData.Protect(plaintext, _entropy, DataProtectionScope.CurrentUser);
             await AtomicUserFile.WriteAsync(_path, ciphertext, cancellationToken);
         }
         catch (Exception exception) when (exception is CryptographicException or IOException or UnauthorizedAccessException)
-        { throw new LocalStorageException("测试凭据无法加密保存，请检查当前 Windows 用户与数据目录。"); }
+        { throw new LocalStorageException("凭据无法加密保存，请检查当前 Windows 用户与数据目录。"); }
         finally { CryptographicOperations.ZeroMemory(plaintext); }
     }
 
@@ -30,13 +31,13 @@ public sealed class DpapiCredentialStore(string directory) : ICredentialStore
         {
             var ciphertext = await AtomicUserFile.ReadAsync(_path, cancellationToken);
             if (ciphertext is null) return null;
-            plaintext = ProtectedData.Unprotect(ciphertext, Entropy, DataProtectionScope.CurrentUser);
+            plaintext = ProtectedData.Unprotect(ciphertext, _entropy, DataProtectionScope.CurrentUser);
             var credential = Encoding.UTF8.GetString(plaintext);
             ValidateCredential(credential);
             return credential;
         }
         catch (Exception exception) when (exception is CryptographicException or IOException or UnauthorizedAccessException or ArgumentException)
-        { throw new LocalStorageException("已保存的测试凭据无法恢复，请重新保存测试凭据。"); }
+        { throw new LocalStorageException("已保存的凭据无法恢复，请重新输入并保存。"); }
         finally { if (plaintext is not null) CryptographicOperations.ZeroMemory(plaintext); }
     }
 

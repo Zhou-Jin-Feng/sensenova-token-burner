@@ -26,7 +26,7 @@ public static class EngineResourceProbe
         var rounds = new List<EngineRoundMeasurement>(2);
         try
         {
-            await WriteStateAsync(options, "Warmup", rounds).ConfigureAwait(false);
+            await WriteStateAsync(options, "Setup", rounds).ConfigureAwait(false);
             using var http = new HttpClient(handler, disposeHandler: false)
             { BaseAddress = new Uri(SenseNovaDefaults.BaseUrl + "/"), Timeout = TimeSpan.FromSeconds(30) };
             var client = new SenseNovaHttpClient(http);
@@ -55,6 +55,7 @@ public static class EngineResourceProbe
             runtime = new(executor, measuredStore);
             await runtime.InitializeAsync(cancellationToken).ConfigureAwait(false);
             await runtime.ConfirmRecoveryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            await WriteStateAsync(options, "Warmup", rounds).ConfigureAwait(false);
             await Task.Delay(TimeSpan.FromSeconds(options.WarmupSeconds), cancellationToken).ConfigureAwait(false);
 
             await WriteStateAsync(options, "LoadPlain", rounds).ConfigureAwait(false);

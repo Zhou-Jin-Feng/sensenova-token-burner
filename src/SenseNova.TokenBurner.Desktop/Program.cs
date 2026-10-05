@@ -15,6 +15,9 @@ internal static class Program
         ResourceProbeOptions? options;
         try { options = ResourceProbeOptions.Parse(arguments); }
         catch (ArgumentException) { return 1; }
+        if (options is null && arguments.Length > 0 && !arguments.SequenceEqual(new[] { "--mock" })) return 1;
+        var mockMode = options is not null || arguments.SequenceEqual(new[] { "--mock" })
+            || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SENSENOVA_MOCK_PROFILE"));
 
         ApplicationConfiguration.Initialize();
         UserInstanceLock? instance;
@@ -35,16 +38,20 @@ internal static class Program
             return 2;
         }
         using var instanceLifetime = instance;
-        var directory = Environment.GetEnvironmentVariable("SENSENOVA_MOCK_PROFILE")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SenseNova.TokenBurner", "Demo");
-        using var handler = new MockSenseNovaHandler();
+        var directory = mockMode ? Environment.GetEnvironmentVariable("SENSENOVA_MOCK_PROFILE")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SenseNova.TokenBurner", "Demo")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SenseNova.TokenBurner", "User");
+        using HttpMessageHandler handler = mockMode ? new MockSenseNovaHandler()
+            : new HttpClientHandler { AllowAutoRedirect = false };
         using var http = new HttpClient(handler)
         {
             BaseAddress = new Uri(SenseNovaDefaults.BaseUrl + "/"),
-            Timeout = TimeSpan.FromSeconds(30)
+            Timeout = TimeSpan.FromMinutes(2)
         };
+        var profile = mockMode ? StorageProfile.Mock : StorageProfile.User;
         var viewModel = new MainWindowViewModel(new SenseNovaHttpClient(http),
-            new JsonUserSettingsStore(directory), new DpapiCredentialStore(directory));
+            new JsonUserSettingsStore(directory, profile), new DpapiCredentialStore(directory, profile), mockMode,
+            new JsonRunStateStore(directory));
         using var lifetime = new CancellationTokenSource();
         using var form = new MainForm(viewModel);
         var exitCode = 0;
@@ -55,12 +62,17 @@ internal static class Program
             if (options is null || lifetime.IsCancellationRequested) return;
             try
             {
-                if (options.FullEngine)
+                if (options.FullPanel)
                 {
                     form.Enabled = false;
-                    await EngineResourceProbe.RunAsync(options, handler, lifetime.Token);
+                    await PanelResourceProbe.RunAsync(options, viewModel, (MockSenseNovaHandler)handler, lifetime.Token);
                 }
-                else await ResourceProbe.RunAsync(options, viewModel, handler, lifetime.Token);
+                else if (options.FullEngine)
+                {
+                    form.Enabled = false;
+                    await EngineResourceProbe.RunAsync(options, (MockSenseNovaHandler)handler, lifetime.Token);
+                }
+                else await ResourceProbe.RunAsync(options, viewModel, (MockSenseNovaHandler)handler, lifetime.Token);
             }
             catch (Exception) { exitCode = 1; }
             if (!lifetime.IsCancellationRequested) form.Close();

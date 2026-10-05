@@ -13,7 +13,8 @@ internal sealed class MainForm : Form
     private readonly ComboBox _models = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 460, AccessibleName = "模拟模型" };
     private readonly Label _capability = new() { AutoSize = true };
     private readonly Label _credential = new() { AutoSize = true };
-    private readonly CheckBox _remember = new() { Text = "按当前 Windows 用户加密保存测试凭据", AutoSize = true, Checked = true };
+    private readonly TextBox _key = new() { Width = 620, UseSystemPasswordChar = true, MaxLength = 8192, AccessibleName = "SenseNova API key" };
+    private readonly CheckBox _remember = new() { Text = "按当前 Windows 用户加密保存 API key", AutoSize = true, Checked = true };
     private readonly TrackBar _percentage = new() { Minimum = 0, Maximum = 95, TickFrequency = 5, Width = 880, AccessibleName = "预计专属积分消耗比例" };
     private readonly Label _percentageLabel = new() { AutoSize = true };
     private readonly Label _target = new() { AutoSize = true };
@@ -26,6 +27,17 @@ internal sealed class MainForm : Form
     private readonly Button _save = new() { Text = "保存模拟配置", AutoSize = true };
     private readonly Button _probe = new() { Text = "模拟调用一次", AutoSize = true };
     private readonly Button _cancel = new() { Text = "取消", AutoSize = true };
+    private readonly Button _start = new() { Text = "开始本轮", AutoSize = true };
+    private readonly Button _pause = new() { Text = "暂停", AutoSize = true };
+    private readonly Button _resume = new() { Text = "继续", AutoSize = true };
+    private readonly Button _stop = new() { Text = "停止本轮", AutoSize = true };
+    private readonly Button _confirm = new() { Text = "确认运行记录", AutoSize = true };
+    private readonly CheckBox _review = new() { Text = "我已核查官方账户用量与额度，接受未知记录并手动开始新轮", AutoSize = true };
+    private readonly Label _recovery = new() { AutoSize = true, MaximumSize = new Size(860, 0) };
+    private readonly Label _runState = new() { AutoSize = true };
+    private readonly Label _runUsage = new() { AutoSize = true };
+    private readonly Label _runDetail = new() { AutoSize = true };
+    private readonly Label _runFailure = new() { AutoSize = true };
     private bool _updating;
     private bool _closing;
     private bool _readyToClose;
@@ -33,7 +45,7 @@ internal sealed class MainForm : Form
     public MainForm(MainWindowViewModel viewModel)
     {
         _viewModel = viewModel;
-        Text = "SenseNova Token Burner · 模拟面板";
+        Text = viewModel.IsMockMode ? "SenseNova Token Burner · 模拟面板" : "SenseNova Token Burner";
         ClientSize = new Size(1024, 806);
         MinimumSize = new Size(800, 650);
         StartPosition = FormStartPosition.CenterScreen;
@@ -51,16 +63,20 @@ internal sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var header = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         header.Controls.Add(new Label { Text = "用量与运行管理", Font = _headingFont, AutoSize = true });
-        header.Controls.Add(new Label { Text = "模拟模式 · 内置 HTTP mock · 无真实扣费", AutoSize = true });
+        header.Controls.Add(new Label { Text = viewModel.IsMockMode ? "模拟模式 · 内置 HTTP mock · 无真实扣费" : "官方 API · 显式开始运行 · 用量与返赠以账户记录为准", AutoSize = true });
         layout.Controls.Add(header, 0, 0);
 
         var content = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         var service = CreateCard("服务与模型");
         service.Controls.Add(new Label { Text = "官方服务地址：" + viewModel.BaseUrl, AutoSize = true });
+        service.Controls.Add(new Label { Text = viewModel.IsMockMode ? "当前使用内置虚拟 key，无真实扣费。" : "填写自己的 SenseNova API key：", AutoSize = true });
+        _key.Visible = !viewModel.IsMockMode;
+        service.Controls.Add(_key);
         service.Controls.Add(_models);
+        _models.AccessibleName = "SenseNova 模型";
+        _read.Text = "校验连接并读取模型";
         service.Controls.Add(_read);
         service.Controls.Add(_capability);
-        service.Controls.Add(new Label { Text = "当前使用内置虚拟 key；未开放真实 key 输入。", AutoSize = true });
         service.Controls.Add(_remember);
         service.Controls.Add(_credential);
         content.Controls.Add(service);
@@ -86,22 +102,40 @@ internal sealed class MainForm : Form
         schedule.Controls.Add(_interval);
         schedule.Controls.Add(new Label { Text = "默认 5 小时，当前仅保存配置；计划开关将在完整面板中接入。", AutoSize = true });
         schedule.Controls.Add(_save);
+        _save.Text = "保存配置与凭据选择";
         content.Controls.Add(schedule);
+        var recovery = CreateCard("运行记录与重开保护");
+        recovery.Controls.Add(_recovery);
+        recovery.Controls.Add(_review);
+        recovery.Controls.Add(_confirm);
+        content.Controls.Add(recovery);
         layout.Controls.Add(content, 0, 1);
 
         var footer = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         footer.Controls.Add(_status);
         footer.Controls.Add(_usage);
-        footer.Controls.Add(new Label { Text = "只模拟一次短请求，不执行完整 token 目标；关闭取消操作并退出。", AutoSize = true });
+        footer.Controls.Add(_runState);
+        footer.Controls.Add(_runUsage);
+        footer.Controls.Add(_runDetail);
+        footer.Controls.Add(_runFailure);
+        footer.Controls.Add(new Label { Text = "开始后按本轮目标运行；暂停停止新增请求，停止收齐在途结果。关闭窗口当前退出。", AutoSize = true });
         var actions = new FlowLayoutPanel { AutoSize = true };
         var exit = new Button { Text = "退出", AutoSize = true };
         exit.Click += (_, _) => Close();
-        actions.Controls.AddRange([_probe, _cancel, exit]);
+        _probe.Visible = viewModel.IsMockMode;
+        actions.Controls.AddRange([_start, _pause, _resume, _stop, _probe, _cancel, exit]);
         footer.Controls.Add(actions);
         layout.Controls.Add(footer, 0, 2);
         Controls.Add(layout);
 
-        _inputs.AddRange([_models, _remember, _percentage, _interval]);
+        _inputs.AddRange([_key, _models, _remember, _percentage, _interval]);
+        _key.TextChanged += (_, _) => { if (!_updating) _viewModel.ApiKey = _key.Text; };
+        _start.Click += async (_, _) => await _viewModel.StartRunCommand.ExecuteAsync();
+        _pause.Click += (_, _) => _viewModel.PauseRun();
+        _resume.Click += (_, _) => _viewModel.ResumeRun();
+        _stop.Click += async (_, _) => await _viewModel.StopRunAsync();
+        _confirm.Click += async (_, _) => await _viewModel.ConfirmRecoveryCommand.ExecuteAsync();
+        _review.CheckedChanged += (_, _) => { if (!_updating) _viewModel.ReviewCompleted = _review.Checked; };
         _read.Click += async (_, _) => await _viewModel.ReadModelsCommand.ExecuteAsync();
         _save.Click += async (_, _) => await _viewModel.SaveConfigurationCommand.ExecuteAsync();
         _probe.Click += async (_, _) => await _viewModel.ProbeCommand.ExecuteAsync();
@@ -140,6 +174,7 @@ internal sealed class MainForm : Form
                 _models.DataSource = _viewModel.Models.ToArray();
             }
             _models.SelectedItem = _viewModel.SelectedModel;
+            if (_key.Text != _viewModel.ApiKey) _key.Text = _viewModel.ApiKey;
             _percentage.Value = _viewModel.Percentage;
             _percentageLabel.Text = _viewModel.PercentageLabel;
             _target.Text = "本轮 token 目标：" + _viewModel.TargetTokensLabel;
@@ -150,11 +185,23 @@ internal sealed class MainForm : Form
             _capability.Text = _viewModel.ModelCapabilityLabel;
             _status.Text = _viewModel.StatusText;
             _usage.Text = _viewModel.UsageLabel;
+            _runState.Text = _viewModel.RunStateLabel;
+            _runUsage.Text = _viewModel.RunUsageLabel;
+            _runDetail.Text = _viewModel.RunDetailLabel;
+            _runFailure.Text = _viewModel.RunFailureLabel;
+            _recovery.Text = _viewModel.RecoveryLabel;
+            _review.Checked = _viewModel.ReviewCompleted;
+            _review.Enabled = _viewModel.IsIdle && _viewModel.Recovery.State == RecoveryState.NeedsReview;
+            _confirm.Enabled = _viewModel.ConfirmRecoveryCommand.CanExecute(null);
+            _start.Enabled = _viewModel.StartRunCommand.CanExecute(null);
+            _pause.Enabled = _viewModel.CanPause;
+            _resume.Enabled = _viewModel.CanResume;
+            _stop.Enabled = _viewModel.IsRunActive;
             foreach (var input in _inputs) input.Enabled = _viewModel.IsIdle;
             _read.Enabled = _viewModel.ReadModelsCommand.CanExecute(null);
             _save.Enabled = _viewModel.SaveConfigurationCommand.CanExecute(null);
             _probe.Enabled = _viewModel.ProbeCommand.CanExecute(null);
-            _cancel.Enabled = _viewModel.IsBusy;
+            _cancel.Enabled = _viewModel.IsBusy && !_viewModel.IsRunActive;
         }
         finally { _updating = false; }
     }

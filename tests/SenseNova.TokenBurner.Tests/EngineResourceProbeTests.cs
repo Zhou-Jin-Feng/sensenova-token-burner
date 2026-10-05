@@ -64,9 +64,28 @@ public sealed class EngineResourceProbeTests
     {
         using var folder = new TestFolder();
         using var handler = new MockSenseNovaHandler(delay: TimeSpan.Zero);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
-        await Assert.ThrowsAsync<OperationCanceledException>(() => EngineResourceProbe.RunAsync(new(folder.Path, 1, 10, 5),
-            handler, cancellation.Token, 5000, 1000));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var pending = EngineResourceProbe.RunAsync(new(folder.Path, 1, 10, 10), handler, cancellation.Token, 5000, 1000);
+        try
+        {
+            // 等待真实warmup边界；固定200ms会偶发取消到检查点保存，正确触发StorageFailed。
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var warmingUp = false;
+            while (!warmingUp)
+            {
+                if (clock.Elapsed > TimeSpan.FromSeconds(5) || pending.IsCompleted)
+                    throw new AssertFailedException("驱动未进入预热等待。");
+                try
+                {
+                    using var phase = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(folder.Path, "probe-state.json")));
+                    warmingUp = phase.RootElement.GetProperty("Phase").GetString() == "Warmup";
+                }
+                catch (IOException) { }
+                if (!warmingUp) await Task.Delay(10);
+            }
+        }
+        finally { cancellation.Cancel(); }
+        await Assert.ThrowsAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
         using var json = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(folder.Path, "probe-state.json")));
         Assert.AreEqual("Aborted", json.RootElement.GetProperty("Phase").GetString());
         Assert.AreEqual(0, handler.SuccessfulCompletionCount);

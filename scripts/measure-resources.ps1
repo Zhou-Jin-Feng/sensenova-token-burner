@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 [CmdletBinding()]
 param(
-    [ValidateSet('Short', 'Engine')] [string]$Baseline = 'Short',
+    [ValidateSet('Short', 'Engine', 'Panel')] [string]$Baseline = 'Short',
     [ValidateRange(1, 3600)] [int]$IdleSeconds = 120,
     [ValidateRange(1, 1800)] [int]$LoadSeconds = 60,
     [ValidateRange(0, 60)] [int]$WarmupSeconds = 10
@@ -34,7 +34,7 @@ $startInfo = [Diagnostics.ProcessStartInfo]::new($executable)
 $startInfo.UseShellExecute = $false
 $startInfo.CreateNoWindow = $true
 $startInfo.WorkingDirectory = $projectRoot
-$probeFlag = if ($Baseline -eq 'Engine') { '--engine-resource-baseline' } else { '--resource-baseline' }
+$probeFlag = if ($Baseline -eq 'Engine') { '--engine-resource-baseline' } elseif ($Baseline -eq 'Panel') { '--panel-resource-baseline' } else { '--resource-baseline' }
 foreach ($argument in @($probeFlag, $reportDirectory, "$IdleSeconds", "$LoadSeconds", "$WarmupSeconds")) {
     $startInfo.ArgumentList.Add($argument)
 }
@@ -143,7 +143,7 @@ try {
     $report = [PSCustomObject]@{
         SchemaVersion=2; TimestampUtc=[DateTime]::UtcNow.ToString('o'); Build='Release'
         CpuMeasurement='Fractional process CPU seconds, clamped as double; whole-machine percent'
-        BaselineKind=$(if ($Baseline -eq 'Engine') { 'Window with full concurrent HTTP mock, persistent history and five-hour schedule wait' } else { 'Window with short serial in-process HTTP mock' }); Frontend='WinForms'
+        BaselineKind=$(if ($Baseline -eq 'Engine') { 'Window with full concurrent HTTP mock, persistent history and five-hour schedule wait' } elseif ($Baseline -eq 'Panel') { 'Manual panel round with generated input, persistent VM and post-load idle' } else { 'Window with short serial in-process HTTP mock' }); Frontend='WinForms'
         OperatingSystem=[Environment]::OSVersion.VersionString; RuntimeVersion=$finalState.RuntimeVersion
         LogicalProcessors=[Environment]::ProcessorCount; SampleIntervalSeconds=1
         WarmupSeconds=$WarmupSeconds; IdleSeconds=$IdleSeconds; LoadSeconds=$LoadSeconds
@@ -155,7 +155,8 @@ try {
         WindowTitleObserved=$windowTitleObserved
         LoadedWpfModules=$wpfModules
         Engine=$(if ($Baseline -eq 'Engine') { $finalState.Engine } else { $null })
-        Limitations=@($(if ($Baseline -eq 'Engine') { 'Synthetic input and virtual usage; no real API, tray or installed release verification. Plain round runs before persisted round; caches and GC prevent a strict causal disk-cost comparison.' } else { 'Short mock requests only; no full target, long input, tray or real API verification.' }), 'Phase transition CPU samples excluded; one-second sampling can miss brief memory peaks. Process IO write counters are logical IO and do not measure physical disk or power-loss durability.')
+        Panel=$(if ($Baseline -eq 'Panel') { $finalState.Panel } else { $null })
+        Limitations=@($(if ($Baseline -eq 'Engine') { 'Synthetic input and virtual usage; no real API, tray or installed release verification. Plain round runs before persisted round; caches and GC prevent a strict causal disk-cost comparison.' } elseif ($Baseline -eq 'Panel') { 'Panel VM round and generated text with virtual usage; no real API, tray, interactive UI or installed release verification. Plan remains disabled.' } else { 'Short mock requests only; no full target, long input, tray or real API verification.' }), 'Phase transition CPU samples excluded; one-second sampling can miss brief memory peaks. Process IO write counters are logical IO and do not measure physical disk or power-loss durability.')
     }
     $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $reportDirectory 'summary.json') -Encoding utf8
     $scenarios | Format-Table Name,Samples,AverageCpuPercent,MaximumSampleWorkingSetMiB,WorkingSetTargetMet,IdleCpuTargetMet -AutoSize | Out-String | Write-Output
