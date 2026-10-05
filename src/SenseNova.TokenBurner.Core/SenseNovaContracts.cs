@@ -15,9 +15,25 @@ public interface ISenseNovaClient
 
 public enum ApiFailureKind { Authentication, RateOrQuotaLimit, InvalidRequest, ModelUnavailable, Transient, Protocol, Network }
 
-public sealed class SenseNovaApiException(ApiFailureKind kind, string message) : Exception(message)
+// 只能由可信适配器依据执行阶段赋值，不能相信错误正文中的“未扣费”等声明。
+public enum RequestDelivery { Unknown, NotSent, Rejected }
+
+public sealed class SenseNovaApiException : Exception
 {
-    public ApiFailureKind Kind { get; } = kind;
+    public SenseNovaApiException(ApiFailureKind kind, string message,
+        RequestDelivery delivery = RequestDelivery.Unknown, TimeSpan? retryAfter = null) : base(message)
+    {
+        if (!Enum.IsDefined(kind) || !Enum.IsDefined(delivery)) throw new ArgumentOutOfRangeException(nameof(kind));
+        if (retryAfter is { } delay && (delay < TimeSpan.Zero || delay > TimeSpan.FromMinutes(5)))
+            throw new ArgumentOutOfRangeException(nameof(retryAfter));
+        Kind = kind;
+        Delivery = delivery;
+        RetryAfter = retryAfter;
+    }
+
+    public ApiFailureKind Kind { get; }
+    public RequestDelivery Delivery { get; }
+    public TimeSpan? RetryAfter { get; }
 }
 
 public static class RequestBaseline

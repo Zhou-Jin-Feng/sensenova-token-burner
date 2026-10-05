@@ -16,8 +16,10 @@ public sealed class MockSenseNovaHandler(MockScenario scenario = MockScenario.Su
 {
     private int _requestCount;
     private int _successfulProbeCount;
+    private int _successfulCompletionCount;
     public int RequestCount => Volatile.Read(ref _requestCount);
     public int SuccessfulProbeCount => Volatile.Read(ref _successfulProbeCount);
+    public int SuccessfulCompletionCount => Volatile.Read(ref _successfulCompletionCount);
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -42,13 +44,33 @@ public sealed class MockSenseNovaHandler(MockScenario scenario = MockScenario.Su
         if (request.Method == HttpMethod.Post && request.RequestUri.AbsolutePath == "/v1/chat/completions")
         {
             using var payload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
-            if (payload.RootElement.GetProperty("model").GetString() != SenseNovaDefaults.RebateModel
-                || payload.RootElement.GetProperty("stream").GetBoolean()
-                || payload.RootElement.GetProperty("max_tokens").GetInt32() != Core.RequestBaseline.ProbeOutputTokens)
+            var root = payload.RootElement;
+            var outputLimit = root.GetProperty("max_tokens").GetInt32();
+            var messages = root.GetProperty("messages");
+            if (messages.GetArrayLength() != 1) return Reply(HttpStatusCode.BadRequest, "{}");
+            var input = messages[0].GetProperty("content").GetString();
+            var probe = outputLimit == Core.RequestBaseline.ProbeOutputTokens && input == "请只回复 OK。";
+            if (root.GetProperty("model").GetString() != SenseNovaDefaults.RebateModel
+                || root.GetProperty("stream").GetBoolean()
+                || messages[0].GetProperty("role").GetString() != "user"
+                || string.IsNullOrWhiteSpace(input) || input.Length > Core.RequestBaseline.InputCharacterTarget
+                || outputLimit <= 0 || outputLimit > Core.RequestBaseline.MaximumOutputTokens)
                 return Reply(HttpStatusCode.BadRequest, "{}");
-            if (scenario != MockScenario.MissingUsage) Interlocked.Increment(ref _successfulProbeCount);
+            if (scenario != MockScenario.MissingUsage)
+            {
+                if (probe) Interlocked.Increment(ref _successfulProbeCount);
+                else Interlocked.Increment(ref _successfulCompletionCount);
+            }
+            // 仅mock约定，绝非官方tokenizer：完整请求虚拟输入usage为字符数的一半。
+            var inputTokens = probe ? 128 : (input.Length + 1) / 2;
+            var outputTokens = Math.Min(8, outputLimit);
+            var success = JsonSerializer.Serialize(new
+            {
+                choices = Array.Empty<object>(),
+                usage = new { prompt_tokens = inputTokens, completion_tokens = outputTokens, total_tokens = inputTokens + outputTokens }
+            });
             return Reply(HttpStatusCode.OK, scenario == MockScenario.MissingUsage ? "{\"choices\":[]}" :
-                "{\"choices\":[],\"usage\":{\"prompt_tokens\":128,\"completion_tokens\":8,\"total_tokens\":136}}");
+                success);
         }
         return Reply(HttpStatusCode.NotFound, "{}");
     }

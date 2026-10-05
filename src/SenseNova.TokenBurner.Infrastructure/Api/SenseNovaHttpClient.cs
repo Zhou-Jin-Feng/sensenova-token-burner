@@ -7,7 +7,7 @@ using SenseNova.TokenBurner.Infrastructure.Storage;
 
 namespace SenseNova.TokenBurner.Infrastructure.Api;
 
-public sealed class SenseNovaHttpClient : ISenseNovaClient
+public sealed class SenseNovaHttpClient : ISenseNovaClient, ISenseNovaCompletionClient
 {
     private const int MaximumResponseBytes = 1_048_576;
     private readonly HttpClient _httpClient;
@@ -47,9 +47,9 @@ public sealed class SenseNovaHttpClient : ISenseNovaClient
     {
         ArgumentNullException.ThrowIfNull(model);
         if (!model.IsRebateEligible || model.Id != SenseNovaDefaults.RebateModel)
-            throw new SenseNovaApiException(ApiFailureKind.ModelUnavailable, "当前返赠模式只允许已确认的 Flash-Lite 模型。");
+            throw new SenseNovaApiException(ApiFailureKind.ModelUnavailable, "当前返赠模式只允许已确认的 Flash-Lite 模型。", RequestDelivery.NotSent);
         if (model.MaxOutputLength is < RequestBaseline.ProbeOutputTokens)
-            throw new SenseNovaApiException(ApiFailureKind.InvalidRequest, "模型输出上限不足以执行当前测试请求。");
+            throw new SenseNovaApiException(ApiFailureKind.InvalidRequest, "模型输出上限不足以执行当前测试请求。", RequestDelivery.NotSent);
         using var request = CreateRequest(HttpMethod.Post, "chat/completions", credential);
         request.Content = JsonContent.Create(new
         {
@@ -59,6 +59,27 @@ public sealed class SenseNovaHttpClient : ISenseNovaClient
             stream = false
         });
         using var document = await SendAsync(request, cancellationToken);
+        return ReadUsage(document);
+    }
+
+    public async Task<TokenUsage> CompleteAsync(string credential, ModelInfo model, CompletionRequest completion,
+        CancellationToken cancellationToken = default)
+    {
+        CompletionRunExecutor.ValidateRequest(model, completion);
+        using var request = CreateRequest(HttpMethod.Post, "chat/completions", credential);
+        request.Content = JsonContent.Create(new
+        {
+            model = model.Id,
+            messages = new[] { new { role = "user", content = completion.Input } },
+            max_tokens = completion.MaximumOutputTokens,
+            stream = false
+        });
+        using var document = await SendAsync(request, cancellationToken);
+        return ReadUsage(document);
+    }
+
+    private static TokenUsage ReadUsage(JsonDocument document)
+    {
         try
         {
             var usage = document.RootElement.GetProperty("usage");
@@ -85,7 +106,7 @@ public sealed class SenseNovaHttpClient : ISenseNovaClient
         try
         {
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if (!response.IsSuccessStatusCode) throw StatusFailure(response.StatusCode);
+            if (!response.IsSuccessStatusCode) throw StatusFailure(response);
             if (response.Content.Headers.ContentLength > MaximumResponseBytes) throw ProtocolFailure();
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var buffer = new MemoryStream();
@@ -100,9 +121,11 @@ public sealed class SenseNovaHttpClient : ISenseNovaClient
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (OperationCanceledException)
-        { throw new SenseNovaApiException(ApiFailureKind.Network, "请求超时，请稍后重试。"); }
+        { throw new SenseNovaApiException(ApiFailureKind.Network, "请求超时，用量可能未知，请先核查后再试。"); }
         catch (HttpRequestException)
         { throw new SenseNovaApiException(ApiFailureKind.Network, "无法完成请求，请检查服务连接。"); }
+        catch (IOException)
+        { throw new SenseNovaApiException(ApiFailureKind.Network, "响应读取中断，用量可能未知，请先核查。"); }
         catch (JsonException) { throw ProtocolFailure(); }
     }
 
@@ -117,13 +140,24 @@ public sealed class SenseNovaHttpClient : ISenseNovaClient
     private static SenseNovaApiException ProtocolFailure()
         => new(ApiFailureKind.Protocol, "响应格式或用量信息无效，未将其记为成功用量。");
 
-    private static SenseNovaApiException StatusFailure(HttpStatusCode status)
-        => (int)status switch
+    private static SenseNovaApiException StatusFailure(HttpResponseMessage response)
+        => (int)response.StatusCode switch
         {
-            401 or 403 => new(ApiFailureKind.Authentication, "认证失败，请检查凭据。"),
-            429 => new(ApiFailureKind.RateOrQuotaLimit, "请求限流或额度受限，请暂停并核查账户后再试。"),
-            404 => new(ApiFailureKind.ModelUnavailable, "模型或接口当前不可用。"),
-            >= 500 => new(ApiFailureKind.Transient, "服务暂时不可用，请稍后重试。"),
+            401 or 403 => new(ApiFailureKind.Authentication, "认证失败，请检查凭据。", RequestDelivery.Rejected),
+            429 => new(ApiFailureKind.RateOrQuotaLimit, "请求限流或额度受限，请暂停并核查账户后再试。",
+                RequestDelivery.Unknown, ReadRetryHint(response)),
+            404 => new(ApiFailureKind.ModelUnavailable, "模型或接口当前不可用。", RequestDelivery.Rejected),
+            400 or 405 or 413 or 422 => new(ApiFailureKind.InvalidRequest, "请求被拒绝，请检查模型与参数。", RequestDelivery.Rejected),
+            408 => new(ApiFailureKind.Network, "服务返回请求超时，用量可能未知，请先核查。"),
+            >= 500 => new(ApiFailureKind.Transient, "服务暂时不可用，用量可能未知，请先核查。"),
             _ => new(ApiFailureKind.InvalidRequest, "请求未被接受，请检查模型与参数。")
         };
+
+    private static TimeSpan? ReadRetryHint(HttpResponseMessage response)
+    {
+        // 提示不证明是纯速率限制，也不证明未执行。不解析/记录服务端错误正文。
+        var header = response.Headers.RetryAfter;
+        var delay = header?.Delta ?? (header?.Date is { } date ? date - DateTimeOffset.UtcNow : (TimeSpan?)null);
+        return delay >= TimeSpan.Zero && delay <= TimeSpan.FromMinutes(5) ? delay : null;
+    }
 }
