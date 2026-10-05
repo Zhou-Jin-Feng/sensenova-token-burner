@@ -21,6 +21,12 @@ public sealed class SingleRunEngine
 
     public RunSnapshot Snapshot { get { lock (_gate) return _snapshot; } }
 
+    // 同一 Core 内的调度接缝：异常立即唤醒计划，不靠循环轮询，也不暴露原始异常。
+    internal Task ProtectionTriggered
+    {
+        get { lock (_gate) return _session?.ProtectionSignal.Task ?? Task.CompletedTask; }
+    }
+
     public Task<RunSnapshot> RunAsync(RunParameters parameters, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(parameters);
@@ -357,6 +363,7 @@ public sealed class SingleRunEngine
             if (_snapshot.State != RunState.AwaitingReview)
                 session.ResumeSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _snapshot = _snapshot with { State = RunState.AwaitingReview, Failure = failure };
+            _session!.ProtectionSignal.TrySetResult();
             return;
         }
         MarkFailureLocked(failure.Value);
@@ -374,6 +381,7 @@ public sealed class SingleRunEngine
             LastFailure = failure,
             EndReason = effective == RunFailureKind.Canceled ? RunEndReason.LifecycleCancellation : RunEndReason.Failure
         };
+        _session!.ProtectionSignal.TrySetResult();
     }
 
     private RunFailureKind? AcceptUsageLocked(TokenUsage? usage)
@@ -415,6 +423,7 @@ public sealed class SingleRunEngine
     {
         public TaskCompletionSource<RunSnapshot> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource StopSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ProtectionSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource? ResumeSignal { get; set; }
         public CancellationTokenSource AbortRequests { get; } = new();
         public bool RetryPending { get; set; }

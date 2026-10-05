@@ -6,9 +6,19 @@ internal sealed class ManualRunTimeProvider : TimeProvider
     private readonly object _gate = new();
     private readonly List<ManualTimer> _timers = [];
     private long _ticks;
+    private long _utcOffsetTicks;
+    private TimeZoneInfo _localZone = TimeZoneInfo.Utc;
+    public override TimeZoneInfo LocalTimeZone { get { lock (_gate) return _localZone; } }
     public override long TimestampFrequency => TimeSpan.TicksPerSecond;
     public override long GetTimestamp() { lock (_gate) return _ticks; }
-    public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch + TimeSpan.FromTicks(GetTimestamp());
+    public override DateTimeOffset GetUtcNow()
+    {
+        lock (_gate) return DateTimeOffset.UnixEpoch + TimeSpan.FromTicks(_ticks + _utcOffsetTicks);
+    }
+
+    public void ShiftUtc(TimeSpan change) { lock (_gate) _utcOffsetTicks += change.Ticks; }
+    public void SetLocalZone(TimeZoneInfo zone) { lock (_gate) _localZone = zone; }
+    public int ActiveTimers { get { lock (_gate) return _timers.Count; } }
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
