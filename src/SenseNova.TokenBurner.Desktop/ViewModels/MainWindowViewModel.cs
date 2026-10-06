@@ -36,15 +36,21 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
     private bool _preparingInput;
     private bool _reviewCompleted;
     private RunSnapshot _run = RunSnapshot.Idle;
+    private bool _scheduleManaged;
+    private bool _changingSchedule;
+    private Task _scheduleMonitor = Task.CompletedTask;
+    private Task _scheduleControl = Task.CompletedTask;
+    private ScheduleSnapshot _observedSchedule = ScheduleSnapshot.Disabled;
+    private TaskCompletionSource _scheduleWake = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public MainWindowViewModel(ISenseNovaClient? client = null, IUserSettingsStore? settingsStore = null,
         ICredentialStore? credentialStore = null, bool mockMode = true, IRunStateStore? runStore = null,
-        Func<CancellationToken, Task<CompletionRequest>>? createInput = null)
+        Func<CancellationToken, Task<CompletionRequest>>? createInput = null, TimeProvider? timeProvider = null)
     {
         _client = client;
         _settingsStore = settingsStore;
         _credentialStore = credentialStore;
-        _session = runStore is null ? null : new(_executor, runStore);
+        _session = runStore is null ? null : new(_executor, runStore, timeProvider: timeProvider);
         _createInput = createInput ?? (token => Task.Run(() => CompletionInput.Create(token), token));
         IsMockMode = mockMode;
         if (!mockMode)
@@ -54,11 +60,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
         }
         SelectPresetCommand = new PresetCommand(this);
         SaveConfigurationCommand = new AsyncCommand(SaveConfigurationAsync, () => IsIdle && _settingsStore is not null);
-        ReadModelsCommand = new AsyncCommand(ReadModelsAsync, () => IsIdle && _client is not null && HasValidCredential);
+        ReadModelsCommand = new AsyncCommand(ReadModelsAsync, () => CanEditCredential && _client is not null && HasValidCredential);
         ProbeCommand = new AsyncCommand(ProbeAsync, CanProbe);
         StartRunCommand = new AsyncCommand(StartRunAsync, CanStartRun);
+        EnableScheduleCommand = new AsyncCommand(EnableScheduleAsync, CanEnableSchedule);
         ConfirmRecoveryCommand = new AsyncCommand(ConfirmRecoveryAsync, () => IsIdle && _session is not null
-            && (Recovery.State == RecoveryState.AwaitingConfirmation
+            && !ScheduleEnabled && !_scheduleManaged && (Recovery.State == RecoveryState.AwaitingConfirmation
                 || (Recovery.State == RecoveryState.NeedsReview && ReviewCompleted)));
         CancelCommand = new CancelOperationCommand(this);
     }
@@ -73,7 +80,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
         get => _apiKey;
         set
         {
-            if (!IsIdle || IsMockMode || _apiKey == value) return;
+            if (!CanEditCredential || IsMockMode || _apiKey == value) return;
             SetApiKey(value);
             CredentialStatus = HasValidCredential ? "key 仅在内存中；保存后按所选方式处理。" : "请填写有效的 API key。";
             StatusText = "key 已更改，请重新校验连接。";
@@ -89,16 +96,36 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
     public AsyncCommand ReadModelsCommand { get; }
     public AsyncCommand ProbeCommand { get; }
     public AsyncCommand StartRunCommand { get; }
+    public AsyncCommand EnableScheduleCommand { get; }
     public AsyncCommand ConfirmRecoveryCommand { get; }
     public ICommand CancelCommand { get; }
     public ObservableCollection<ModelInfo> Models { get; } = [];
-    public bool IsIdle => !_isBusy && !_disposed;
-    public bool IsBusy => _isBusy;
-    public bool IsRunActive => _runActive;
+    public bool IsIdle => !IsBusy && !_disposed;
+    public bool IsBusy => _isBusy || _changingSchedule || HasScheduledRun;
+    public bool IsRunActive => _runActive || HasScheduledRun;
+    private bool HasScheduledRun => _scheduleManaged && _session?.CurrentRun.State is
+        RunState.Running or RunState.Paused or RunState.Stopping or RunState.AwaitingReview;
+    public ScheduleSnapshot Schedule => _session?.Schedule ?? ScheduleSnapshot.Disabled;
+    public bool ScheduleEnabled => Schedule.State == ScheduleState.Enabled;
+    public bool CanEditCredential => IsIdle && !ScheduleEnabled && !_scheduleManaged;
+    public bool CanDisableSchedule => !_disposed && !_changingSchedule && ScheduleEnabled;
+    public string ScheduleLabel => _preparingInput ? "正在准备输入，计划尚未启用。" : Schedule.State switch
+    {
+        ScheduleState.Enabled => $"计划已启用 · 已开始 {Schedule.StartedRuns} 轮 · 跳过 {Schedule.SkippedCycles} 次",
+        ScheduleState.Blocked => "计划因运行保护或异常关闭；核查后需手动重新启用。",
+        ScheduleState.Shutdown => "计划已随退出关闭。",
+        _ => "计划关闭；启用后立即开始首轮。"
+    };
+    public string NextRunLabel => Schedule.NextRunUtc is { } next
+        ? $"下次计划运行：{next.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}（本地时间）"
+        : "下次计划运行：未安排。";
+    public string SavedPlanLabel => Recovery.Document?.Plan is { } plan
+        ? $"已保存计划：每 {plan.IntervalHours} 小时，目标 {plan.Run.TargetTokens:N0} tokens。重开后需确认记录、校验连接并手动启用。"
+        : "尚无已保存计划；打开或保存配置不会启用计划。";
     public RunSnapshot Run => _run;
     public RecoverySnapshot Recovery => _session?.Recovery ?? new(RecoveryState.NotInitialized, null);
-    public bool CanPause => !_disposed && _runActive && _run.State == RunState.Running;
-    public bool CanResume => !_disposed && _runActive && _run.State == RunState.Paused && !_run.ReviewRequired;
+    public bool CanPause => !_disposed && IsRunActive && _session?.CurrentRun.State == RunState.Running;
+    public bool CanResume => !_disposed && IsRunActive && _session?.CurrentRun.State == RunState.Paused && !_session.CurrentRun.ReviewRequired;
     public bool ReviewCompleted
     {
         get => _reviewCompleted;
@@ -126,7 +153,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
     };
     public string RecoveryLabel => Recovery.State switch
     {
-        RecoveryState.Ready => "运行记录就绪；计划保持关闭。",
+        RecoveryState.Ready => "运行记录就绪。",
         RecoveryState.AwaitingConfirmation => "发现上次记录；确认后仍需手动开始。",
         RecoveryState.NeedsReview => $"待核查：{Recovery.UnresolvedRequests} 笔在途或未知；请核查官方账户用量、额度后勾选确认。",
         RecoveryState.StorageFailed => "记录保存失败，本次会话禁止继续；请修复存储后重新打开并核查。",
@@ -144,7 +171,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
     public string IntervalHoursText
     {
         get => _intervalHoursText;
-        set { _intervalHoursText = value; Notify(nameof(IntervalHoursText)); Notify(nameof(IntervalLabel)); }
+        set { _intervalHoursText = value; Notify(nameof(IntervalHoursText)); Notify(nameof(IntervalLabel)); EnableScheduleCommand.Refresh(); }
     }
 
     public bool RememberCredential
@@ -162,6 +189,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
             Notify(nameof(SelectedModel)); Notify(nameof(Model)); Notify(nameof(ModelCapabilityLabel));
             ProbeCommand.Refresh();
             StartRunCommand.Refresh();
+            EnableScheduleCommand.Refresh();
         }
     }
 
@@ -183,6 +211,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
             }
             ProbeCommand.Refresh();
             StartRunCommand.Refresh();
+            EnableScheduleCommand.Refresh();
         }
     }
 
@@ -225,26 +254,43 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
     public Task SaveConfigurationAsync() => StartOperation(async cancellationToken =>
     {
         if (_settingsStore is null) return;
+        if (ScheduleEnabled && !CanUseSelectedModel()) throw new ArgumentException("计划模型不可用。");
+        var settings = await SaveSettingsAsync(cancellationToken);
+        if (ScheduleEnabled)
+        {
+            var current = Schedule.Configuration!.Run;
+            await _session!.UpdateScheduleAsync(new(current with { TargetTokens = TargetTokens }, settings.IntervalHours), cancellationToken);
+            _scheduleWake.TrySetResult();
+            RefreshRun();
+            StatusText = Percentage == 0 ? "配置已保存，0%已关闭未来计划。" : "配置已保存并用于下一轮；当前轮参数不变。";
+        }
+        else StatusText = "配置已保存；保存不会触发模型调用或计划运行。";
+    });
+
+    private async Task<AppSettings> SaveSettingsAsync(CancellationToken cancellationToken)
+    {
         if (!decimal.TryParse(IntervalHoursText, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var hours))
             throw new ArgumentException("间隔无效。");
         var settings = new AppSettings { Percentage = Percentage, IntervalHours = hours,
             ModelId = Model, RememberCredential = RememberCredential };
         settings.Validate();
         if (!HasValidCredential) throw new ArgumentException("key 无效。");
+        if (ScheduleEnabled)
+            _ = new ScheduleConfiguration(Schedule.Configuration!.Run with { TargetTokens = TargetTokens }, hours).Interval;
         if (RememberCredential && _credentialStore is not null)
         {
             await _credentialStore.SaveAsync(Credential, cancellationToken);
             CredentialStatus = "凭据已按当前 Windows 用户加密保存。";
         }
         else CredentialStatus = "凭据仅本次使用；已有密文保留，下次启动不读取。";
-        await _settingsStore.SaveAsync(settings, cancellationToken);
+        if (_settingsStore is not null) await _settingsStore.SaveAsync(settings, cancellationToken);
         _preferredModel = settings.ModelId;
-        StatusText = "配置已保存；保存不会触发模型调用或计划运行。";
-    });
+        return settings;
+    }
 
     public Task ReadModelsAsync() => StartOperation(async cancellationToken =>
     {
-        if (_client is null) return;
+        if (_client is null || ScheduleEnabled || _scheduleManaged) return;
         InvalidateConnection();
         if (!HasValidCredential) throw new ArgumentException("key 无效。");
         var models = await _client.GetModelsAsync(Credential, cancellationToken);
@@ -272,11 +318,107 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
 
     public void CancelOperation() => _operation?.Cancel();
 
-    private bool CanStartRun() => IsIdle && _session is not null && _client is ISenseNovaCompletionClient
-        && _connectionValidated && HasValidCredential && Percentage > 0 && Recovery.State == RecoveryState.Ready
+    private bool CanStartRun() => IsIdle && !ScheduleEnabled && !_scheduleManaged && CanUseSelectedModel()
+        && Percentage > 0 && Recovery.State == RecoveryState.Ready;
+
+    private bool CanUseSelectedModel() => _session is not null && _client is ISenseNovaCompletionClient
+        && _connectionValidated && HasValidCredential
         && SelectedModel is { IsRebateEligible: true, ContextLength: >= CompletionInput.EstimatedInputTokens + RequestBaseline.MaximumOutputTokens,
             MaxOutputLength: >= RequestBaseline.MaximumOutputTokens }
         && SelectedModel.Id == SenseNovaDefaults.RebateModel && Models.Contains(SelectedModel);
+
+    private bool CanEnableSchedule() => CanStartRun() && decimal.TryParse(IntervalHoursText,
+        NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var hours) && hours > 0
+        && hours <= (decimal)TimeSpan.MaxValue.TotalHours && hours * TimeSpan.TicksPerHour >= TimeSpan.TicksPerSecond;
+
+    public Task EnableScheduleAsync()
+    {
+        if (!CanEnableSchedule()) return Task.CompletedTask;
+        var model = SelectedModel!;
+        var credential = Credential;
+        var target = TargetTokens;
+        return StartOperation(async token =>
+        {
+            _runActive = true;
+            _preparingInput = true;
+            ReviewCompleted = false;
+            RefreshRun();
+            try
+            {
+                var settings = await SaveSettingsAsync(token);
+                StatusText = "正在准备计划输入；尚未开始消耗。";
+                var input = await _createInput(token);
+                token.ThrowIfCancellationRequested();
+                _executor.Bind(new CompletionRunExecutor((ISenseNovaCompletionClient)_client!, credential, model, input));
+                var parameters = new RunParameters(model.Id, target)
+                {
+                    MaximumConcurrency = RequestBaseline.Concurrency,
+                    RequestTokenReservation = input.EstimatedTotalTokens
+                };
+                _preparingInput = false;
+                _scheduleManaged = await _session!.EnableScheduleAsync(new(parameters, settings.IntervalHours), token);
+                RefreshRun();
+                if (_scheduleManaged) _scheduleMonitor = ObserveScheduleAsync();
+            }
+            finally
+            {
+                _runActive = false;
+                _preparingInput = false;
+                if (!_scheduleManaged) _executor.Clear();
+                RefreshRun();
+            }
+        });
+    }
+
+    public Task DisableScheduleAsync()
+    {
+        if (!CanDisableSchedule) return Task.CompletedTask;
+        _scheduleControl = DisableScheduleCoreAsync();
+        return _scheduleControl;
+    }
+
+    private async Task DisableScheduleCoreAsync()
+    {
+        _changingSchedule = true;
+        RefreshRun();
+        try
+        {
+            await _session!.DisableScheduleAsync();
+            StatusText = "未来计划已关闭；当前轮需单独暂停或停止。";
+        }
+        catch (LocalStorageException) { StatusText = "计划已关闭，但记录保存失败；请保留文件并在重开后核查。"; }
+        finally { _changingSchedule = false; _scheduleWake.TrySetResult(); RefreshRun(); }
+    }
+
+    private async Task ObserveScheduleAsync()
+    {
+        try
+        {
+            while (!_disposed)
+            {
+                var snapshot = Schedule;
+                if (snapshot != _observedSchedule || _run != _session!.CurrentRun) RefreshRun();
+                if (!ScheduleEnabled && !HasScheduledRun) break;
+                // 运行时更新用量；轮间仅低频读内存快照，未变化则不更新控件或落盘。
+                if (_scheduleWake.Task.IsCompleted)
+                    _scheduleWake = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                using var delayCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+                await Task.WhenAny(Task.Delay(HasScheduledRun ? 500 : 5000, delayCancellation.Token), _scheduleWake.Task);
+                await delayCancellation.CancelAsync();
+            }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        finally
+        {
+            if (!_disposed)
+            {
+                _scheduleManaged = false;
+                _executor.Clear();
+                RefreshRun();
+                StatusText = Schedule.State == ScheduleState.Blocked ? ScheduleLabel : "计划已关闭；没有自动重新启用。";
+            }
+        }
+    }
 
     public Task StartRunAsync()
     {
@@ -327,14 +469,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
         });
     }
 
-    public void PauseRun() { if (CanPause) { _session!.Pause(); RefreshRun(); } }
-    public void ResumeRun() { if (CanResume) { _session!.Resume(); RefreshRun(); } }
+    public void PauseRun() { if (CanPause) { _session!.Pause(); _scheduleWake.TrySetResult(); RefreshRun(); } }
+    public void ResumeRun() { if (CanResume) { _session!.Resume(); _scheduleWake.TrySetResult(); RefreshRun(); } }
 
     public async Task StopRunAsync()
     {
-        if (!_runActive || _session is null) return;
+        if (!IsRunActive || _session is null) return;
         if (_preparingInput) CancelOperation();
         await _session.StopAsync();
+        _scheduleWake.TrySetResult();
         RefreshRun();
     }
 
@@ -351,13 +494,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
     {
         if (!_preparingInput && _session is not null && (_session.CurrentRun.State != RunState.Idle || !_runActive))
             _run = _session.CurrentRun.State == RunState.Idle ? Recovery.Document?.CurrentRun?.Snapshot ?? RunSnapshot.Idle : _session.CurrentRun;
-        if (_runActive && !_preparingInput) _statusText = RunStateLabel;
+        _observedSchedule = Schedule;
+        if (_scheduleManaged && !_preparingInput)
+            _statusText = Schedule.State == ScheduleState.Blocked ? ScheduleLabel
+                : IsRunActive ? RunStateLabel
+                : ScheduleEnabled ? "本轮已结束，等待下次计划运行。" : "计划已关闭，本轮已结束。";
+        else if (IsRunActive && !_preparingInput) _statusText = RunStateLabel;
         // 空名称表示整批属性更新；Form只需同步一次，避免每个标签触发全量控件更新。
         Notify(string.Empty);
         StartRunCommand.Refresh(); ConfirmRecoveryCommand.Refresh();
+        EnableScheduleCommand.Refresh();
     }
 
-    private bool CanProbe() => IsMockMode && IsIdle && _connectionValidated && _client is not null && Percentage > 0
+    private bool CanProbe() => IsMockMode && CanEditCredential && _connectionValidated && _client is not null && Percentage > 0
         && SelectedModel is { IsRebateEligible: true } && SelectedModel.Id == SenseNovaDefaults.RebateModel;
 
     private Task StartOperation(Func<CancellationToken, Task> operation)
@@ -387,6 +536,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
         Notify(nameof(IsBusy)); Notify(nameof(IsIdle));
         SaveConfigurationCommand.Refresh(); ReadModelsCommand.Refresh(); ProbeCommand.Refresh();
         StartRunCommand.Refresh(); ConfirmRecoveryCommand.Refresh();
+        EnableScheduleCommand.Refresh();
         ((CancelOperationCommand)CancelCommand).Refresh();
     }
 
@@ -426,11 +576,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
         SetBusy(_isBusy);
         _lifetime.Cancel();
         await _activeTask;
+        await _scheduleControl;
         if (_session is not null)
         {
             try { await _session.ShutdownAsync(); }
             catch (LocalStorageException) { StatusText = "退出时记录保存失败；下次启动需核查，请保留数据文件。"; }
         }
+        await _scheduleMonitor;
         _apiKey = "";
         _executor.Clear();
         _lifetime.Dispose();

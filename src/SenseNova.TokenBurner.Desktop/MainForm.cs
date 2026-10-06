@@ -20,6 +20,10 @@ internal sealed class MainForm : Form
     private readonly Label _target = new() { AutoSize = true };
     private readonly Label _hint = new() { AutoSize = true };
     private readonly TextBox _interval = new() { Width = 140, AccessibleName = "运行间隔（小时）" };
+    private readonly CheckBox _planEnabled = new() { Text = "启用周期计划（立即开始首轮）", AutoSize = true, AccessibleName = "周期计划开关" };
+    private readonly Label _planStatus = new() { AutoSize = true, MaximumSize = new Size(860, 0) };
+    private readonly Label _nextRun = new() { AutoSize = true };
+    private readonly Label _savedPlan = new() { AutoSize = true, MaximumSize = new Size(860, 0) };
     private readonly Label _status = new() { AutoSize = true };
     private readonly Label _usage = new() { AutoSize = true };
     private readonly List<Control> _inputs = [];
@@ -98,9 +102,15 @@ internal sealed class MainForm : Form
         budget.Controls.Add(new Label { Text = "比例来自经验校准，实际扣减和返赠以官方账户记录为准。", AutoSize = true });
         content.Controls.Add(budget);
 
-        var schedule = CreateCard("运行间隔（小时）");
+        var schedule = CreateCard("周期计划");
+        schedule.Controls.Add(new Label { Text = "运行间隔（小时）：", AutoSize = true });
         schedule.Controls.Add(_interval);
-        schedule.Controls.Add(new Label { Text = "默认 5 小时，当前仅保存配置；计划开关将在完整面板中接入。", AutoSize = true });
+        schedule.Controls.Add(_planEnabled);
+        schedule.Controls.Add(_planStatus);
+        schedule.Controls.Add(_nextRun);
+        schedule.Controls.Add(_savedPlan);
+        schedule.Controls.Add(new Label { Text = "默认5小时。轮间修改比例或间隔后保存，用于下一轮；关闭计划不会停止当前轮。", AutoSize = true, MaximumSize = new Size(860, 0) });
+        schedule.Controls.Add(new Label { Text = "下次运行时间属于客户端计划，不是官方额度刷新时间。启用会按所选方式保存配置与凭据。", AutoSize = true, MaximumSize = new Size(860, 0) });
         schedule.Controls.Add(_save);
         _save.Text = "保存配置与凭据选择";
         content.Controls.Add(schedule);
@@ -142,6 +152,13 @@ internal sealed class MainForm : Form
         _cancel.Click += (_, _) => _viewModel.CancelOperation();
         _percentage.ValueChanged += (_, _) => { if (!_updating) _viewModel.Percentage = _percentage.Value; };
         _interval.TextChanged += (_, _) => { if (!_updating) _viewModel.IntervalHoursText = _interval.Text; };
+        _planEnabled.CheckedChanged += async (_, _) =>
+        {
+            if (_updating) return;
+            if (_planEnabled.Checked) await _viewModel.EnableScheduleCommand.ExecuteAsync();
+            else await _viewModel.DisableScheduleAsync();
+            UpdateFromViewModel();
+        };
         _remember.CheckedChanged += (_, _) => { if (!_updating) _viewModel.RememberCredential = _remember.Checked; };
         _models.SelectedIndexChanged += (_, _) => { if (!_updating) _viewModel.SelectedModel = _models.SelectedItem as ModelInfo; };
         _viewModel.PropertyChanged += ViewModelChanged;
@@ -180,6 +197,12 @@ internal sealed class MainForm : Form
             _target.Text = "本轮 token 目标：" + _viewModel.TargetTokensLabel;
             _hint.Text = _viewModel.SelectionHint;
             _interval.Text = _viewModel.IntervalHoursText;
+            _planEnabled.Checked = _viewModel.ScheduleEnabled;
+            _planEnabled.Enabled = _viewModel.ScheduleEnabled ? _viewModel.CanDisableSchedule
+                : _viewModel.EnableScheduleCommand.CanExecute(null);
+            _planStatus.Text = _viewModel.ScheduleLabel;
+            _nextRun.Text = _viewModel.NextRunLabel;
+            _savedPlan.Text = _viewModel.SavedPlanLabel;
             _remember.Checked = _viewModel.RememberCredential;
             _credential.Text = _viewModel.CredentialStatus;
             _capability.Text = _viewModel.ModelCapabilityLabel;
@@ -198,6 +221,8 @@ internal sealed class MainForm : Form
             _resume.Enabled = _viewModel.CanResume;
             _stop.Enabled = _viewModel.IsRunActive;
             foreach (var input in _inputs) input.Enabled = _viewModel.IsIdle;
+            _key.Enabled = _viewModel.CanEditCredential;
+            _remember.Enabled = _viewModel.CanEditCredential;
             _read.Enabled = _viewModel.ReadModelsCommand.CanExecute(null);
             _save.Enabled = _viewModel.SaveConfigurationCommand.CanExecute(null);
             _probe.Enabled = _viewModel.ProbeCommand.CanExecute(null);
