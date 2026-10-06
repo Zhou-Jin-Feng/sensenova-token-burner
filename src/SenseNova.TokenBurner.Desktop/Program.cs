@@ -12,6 +12,11 @@ internal static class Program
     [STAThread]
     private static int Main(string[] arguments)
     {
+        if (arguments is ["--multi-resource-baseline", var output])
+        {
+            ApplicationConfiguration.Initialize();
+            return MultiTaskResourceProbe.Run(output);
+        }
         ResourceProbeOptions? options;
         try { options = ResourceProbeOptions.Parse(arguments); }
         catch (ArgumentException) { return 1; }
@@ -49,6 +54,14 @@ internal static class Program
             Timeout = TimeSpan.FromMinutes(2)
         };
         var profile = mockMode ? StorageProfile.Mock : StorageProfile.User;
+        if (options is null)
+        {
+            var api = new SenseNovaHttpClient(http);
+            var coordinator = new MultiTaskCoordinator(new TaskWorkspace(new JsonTaskCatalogStore(directory, profile)), api, api, mockMode);
+            using var multiForm = new MultiTaskForm(coordinator);
+            Application.Run(multiForm);
+            return 0;
+        }
         var viewModel = new MainWindowViewModel(new SenseNovaHttpClient(http),
             new JsonUserSettingsStore(directory, profile), new DpapiCredentialStore(directory, profile), mockMode,
             new JsonRunStateStore(directory));

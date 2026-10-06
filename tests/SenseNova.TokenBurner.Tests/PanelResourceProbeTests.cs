@@ -29,7 +29,7 @@ public sealed class PanelResourceProbeTests
         using var report = JsonDocument.Parse(json);
         Assert.AreEqual("Completed", report.RootElement.GetProperty("Phase").GetString());
         Assert.IsTrue(report.RootElement.GetProperty("SuccessfulMockRequests").GetInt32() > 0);
-        Assert.AreEqual(201024, report.RootElement.GetProperty("Panel").GetProperty("RequestReservation").GetInt64());
+        Assert.AreEqual(241024, report.RootElement.GetProperty("Panel").GetProperty("RequestReservation").GetInt64());
         Assert.IsFalse(report.RootElement.GetProperty("NetworkEnabled").GetBoolean());
         Assert.IsFalse(json.Contains(MockCredential.Value));
         Assert.IsFalse((await File.ReadAllTextAsync(Path.Combine(folder.Path, "run-state.json"))).Contains(MockCredential.Value));

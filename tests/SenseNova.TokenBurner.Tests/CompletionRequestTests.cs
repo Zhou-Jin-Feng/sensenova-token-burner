@@ -19,6 +19,32 @@ public sealed class CompletionRequestTests
         => new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
     [TestMethod]
+    public async Task ProductionInputWithMeasuredUsageContinuesUntilBudgetRemainder()
+    {
+        var request = CompletionInput.Create();
+        var calls = 0;
+        using var http = Http(new TestHttpHandler((_, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            // Replay the 2026-10-06 real 340000-character request's safe usage fields only.
+            return Task.FromResult(Reply("{\"usage\":{\"prompt_tokens\":217828,\"completion_tokens\":1024,\"total_tokens\":218852}}"));
+        }));
+        var executor = new CompletionRunExecutor(new SenseNovaHttpClient(http), MockCredential.Value, Model, request);
+        var engine = new SingleRunEngine(executor);
+        var result = await engine.RunAsync(new(Model.Id, 600_000)
+        { MaximumConcurrency = 1, RequestTokenReservation = request.EstimatedTotalTokens }).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(RunState.Completed, result.State);
+        Assert.AreEqual(RunEndReason.BudgetRemainder, result.EndReason);
+        Assert.IsNull(result.Failure);
+        Assert.AreEqual(2, calls);
+        Assert.AreEqual(2L, result.CompletedRequests);
+        Assert.AreEqual(new TokenUsage(435656, 2048, 437704), result.ConfirmedUsage);
+        Assert.AreEqual(0, result.InFlightRequests);
+        Assert.AreEqual(0, result.UnknownUsageRequests);
+    }
+
+    [TestMethod]
     public async Task ConcurrentReusedInputKeepsIndependentCredentialsAndValidUtf8Payload()
     {
         const string input = "中文输入 😀 \"引号\"\n<script>&\u2028";

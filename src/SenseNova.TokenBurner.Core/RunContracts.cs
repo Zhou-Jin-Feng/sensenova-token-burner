@@ -5,6 +5,7 @@ public sealed record RunParameters(string ModelId, long TargetTokens)
 {
     public int MaximumConcurrency { get; init; } = 1;
     public long RequestTokenReservation { get; init; }
+    public bool CustomTargetEnabled { get; init; }
 
     public static RunParameters FromSettings(AppSettings settings)
     {
@@ -19,7 +20,8 @@ public sealed record RunParameters(string ModelId, long TargetTokens)
             throw new ArgumentException("运行模型标识无效。", nameof(ModelId));
         ArgumentOutOfRangeException.ThrowIfNegative(TargetTokens);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(TargetTokens,
-            ConsumptionPolicy.GetTargetTokens(ConsumptionPolicy.MaximumPercentage));
+            CustomTargetEnabled ? ConsumptionPolicy.MaximumTargetTokens
+                : ConsumptionPolicy.GetTargetTokens(ConsumptionPolicy.MaximumPercentage));
         ArgumentOutOfRangeException.ThrowIfLessThan(MaximumConcurrency, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(MaximumConcurrency, RequestBaseline.Concurrency);
         ArgumentOutOfRangeException.ThrowIfNegative(RequestTokenReservation);

@@ -9,12 +9,12 @@ public sealed class PersistentRunSession
     private readonly SemaphoreSlim _controls = new(1, 1);
 
     public PersistentRunSession(IRunRequestExecutor executor, IRunStateStore store,
-        RunProtectionOptions? protection = null, TimeProvider? timeProvider = null)
+        RunProtectionOptions? protection = null, TimeProvider? timeProvider = null, RequestConcurrencyLimiter? limiter = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         var time = timeProvider ?? TimeProvider.System;
         _journal = new(store, time);
-        _engine = new(executor, protection, time, _journal);
+        _engine = new(executor, protection, time, _journal, limiter);
         _scheduler = new(_engine, time);
     }
 
@@ -25,6 +25,7 @@ public sealed class PersistentRunSession
     public bool Pause() => _engine.Pause();
     public bool Resume() => _engine.Resume();
     public Task<RunSnapshot> StopAsync(CancellationToken cancellationToken = default) => _engine.StopAsync(cancellationToken);
+    public Task<RunSnapshot> WaitForCompletionAsync() => _engine.WaitForCompletionAsync();
 
     public async Task ConfirmRecoveryAsync(bool reviewCompleted = false, CancellationToken cancellationToken = default)
     {
@@ -47,6 +48,30 @@ public sealed class PersistentRunSession
         {
             if (Schedule.State == ScheduleState.Enabled) throw new InvalidOperationException("请先关闭计划，再手动开始单轮。");
             run = _engine.RunAsync(parameters, cancellationToken);
+        }
+        finally { _controls.Release(); }
+        return await run.ConfigureAwait(false);
+    }
+
+    /// <summary>显式继续已确认进度；旧检查点归档保留，未知请求不会作为原请求自动重发。</summary>
+    public async Task<RunSnapshot> ContinueRemainingAsync(CancellationToken cancellationToken = default,
+        RunParameters? executionParameters = null)
+    {
+        Task<RunSnapshot> run;
+        await _controls.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureInactive();
+            if (Recovery.State != RecoveryState.Ready)
+                throw new InvalidOperationException("请先确认记录；未知请求须先核查官方用量。");
+            var previous = Recovery.Document?.CurrentRun?.Snapshot;
+            if (previous?.Parameters is null || previous.State == RunState.Completed
+                || previous.ConfirmedUsage.TotalTokens >= previous.Parameters.TargetTokens)
+                throw new InvalidOperationException("没有可继续的剩余目标。");
+            var parameters = executionParameters ?? previous.Parameters;
+            if (parameters.TargetTokens != previous.Parameters.TargetTokens || parameters.ModelId != previous.Parameters.ModelId)
+                throw new ArgumentException("继续剩余目标不能修改原轮的模型或目标。");
+            run = _engine.RunWithProgressAsync(parameters, previous, cancellationToken);
         }
         finally { _controls.Release(); }
         return await run.ConfigureAwait(false);

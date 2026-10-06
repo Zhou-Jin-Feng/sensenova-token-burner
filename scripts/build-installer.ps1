@@ -51,7 +51,7 @@ try {
     $files = @(Get-ChildItem -LiteralPath $publishDirectory -Recurse -File -Force)
     $invalid = @($files | Where-Object {
         $_.Attributes -band [IO.FileAttributes]::ReparsePoint -or $_.Extension -in @('.pdb','.log','.dat','.env','.cs','.ps1') `
-        -or $_.Name -match '^(?:settings|mock-settings|run-state|api-key|mock-credential)\.'
+        -or $_.Name -match '^(?:settings|mock-settings|tasks|run-state|api-key|mock-credential)\.'
     })
     if ($invalid.Count) { throw '发布目录包含禁止打包的文件。' }
     if (@(Get-ChildItem -LiteralPath $publishDirectory -Recurse -Directory -Force | Where-Object Name -In @('agent','.local','user-data')).Count) {

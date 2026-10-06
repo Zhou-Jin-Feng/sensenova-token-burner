@@ -1,8 +1,10 @@
 # Windows预览安装包
 
-更新：2026-10-06。首个预览版本为`0.1.0-preview.1`，Windows 11 x64；Setup约35.60MiB，安装文件约117.62MiB。自带.NET10.0.12核心及WindowsDesktop运行时，普通用户无需SDK、Python、Codex或额外运行时。[GitHub预览版下载](https://github.com/Zhou-Jin-Feng/sensenova-token-burner/releases/tag/v0.1.0-preview.1)提供安装包、SHA256SUMS.txt和首次使用说明。
+更新：2026-10-06。新版多key MVP候选为0.2.0-preview.1，准备状态另见末节；自带.NET10.0.12运行时。当前GitHub公开仅旧单key[v0.1.0-preview.1](https://github.com/Zhou-Jin-Feng/sensenova-token-burner/releases/tag/v0.1.0-preview.1)。旧preview.2候选35.60MiB未提交/发布，不能当新版下载。下文保留历史安装与校准记录。
 
-首版只保留填API key、固定官方地址、模型/比例、手动运行、周期计划和托盘退出。历史导出、美化、余额查询及扩展验证延后。使用步骤见 [首次使用](首次使用.md)。
+新版候选自包含发布及安装器编译成功：Setup 37,347,879字节（35.62MiB），安装文件117.70MiB，SHA-256 `5541702d2870a8bc96864825f39cbd61736ec729fa749c130ed7aea6ea11d731`。版本0.2.0-preview.1含多key/备注、独立目标计划、全局并发、额度组、剩余目标恢复及通知；新使用说明同步随包。不含tasks/settings/run-state/凭据文件、agent/.local或调试符号。安装/升级/真实key未执行，新包未推送或发布；源码验收见[新版MVP验收](新版MVP验收.md)。
+
+新版包括多key/备注、独立配置、共享并发、额度组、剩余恢复和完成通知，详见[新版MVP范围](新版MVP范围.md)。旧首版范围保留作历史，使用步骤见[首次使用](首次使用.md)。
 
 ## 安装与用户数据
 
@@ -52,3 +54,13 @@ da74f9d74d1198d9dabb439788556bd42c8fc5c4bf6c17c97e47a27dbc8c080a
 测试通过的是正式HTTP/引擎/落盘路径，不是实际点击安装窗口或34万字符输入校准；不证明专属积分扣减、通用积分返赠或任意初始余额下不扣通用积分。原请求、回答正文和key均未写入报告，未修改真实用户配置或旧脚本。最新最小复查结论`PASS WITH NOTES`：可准备预览MVP；上述边界在Release说明中保留，不追加消耗或反复测试。
 
 首个MVP采用预览版交付，上述边界在[Release说明](https://github.com/Zhou-Jin-Feng/sensenova-token-burner/releases/tag/v0.1.0-preview.1)保留。原异常原因/长期等待、普通窗口等待102.41MiB略超目标等限制保留，见 [托盘报告](托盘与退出.md)、[资源报告](资源基线测量.md)。
+
+## 单笔生产输入校准与修正候选
+
+2026-10-06获准再执行仅1笔34万字符生产请求，最大输出1024，无额外GET、重试或周期。HTTP200，约31.35秒；实际输入217828、输出1024、总218852 tokens，超过旧版200000输入/201024总预留。因此`0.1.0-preview.1`可能在首批请求结算后触发BudgetEstimateExceeded并停止新增，真实HTTP成功不代表整轮可持续运行。
+
+旧本地候选0.1.0-preview.2输入预留240000，总241024；观测上方约10%余量，仍小于262144上下文。离线回放与52项通过，未追加真实调用。候选未发布；该修正已纳入新版多key，不能将尚未公开的preview.2链接当下载入口。
+
+单样本只说明此次输入在新估计内，不是tokenizer保证或积分上限；完整目标、积分扣减来源和返赠仍未验证。
+
+修正版安装包：`SenseNova.TokenBurner-0.1.0-preview.2-win-x64-setup.exe`约35.60MiB，安装文件277项；SHA-256为`4b33255f4896f35ed057361add001b9c4aa1dadaa38e7183fb251c4c4c4e4315`。自包含发布及安装器编译成功，打包DLL离线预检确认240000输入/241024总预留、0请求。没有覆盖正在运行的preview.1，也不重复安装/资源或真实调用；本轮未验证修正版实际升级。发布附件的大小与GitHub SHA-256在上传时核对。

@@ -231,7 +231,7 @@ public sealed class ManualPanelRunTests
     {
         var input = CompletionInput.Create();
         Assert.AreEqual(340_000, input.Input.Length);
-        Assert.AreEqual(200_000L, input.EstimatedInputTokens);
+        Assert.AreEqual(240_000L, input.EstimatedInputTokens);
         input.Validate(new(SenseNovaDefaults.RebateModel, 262144, 65536, true));
         using var canceled = new CancellationTokenSource();
         canceled.Cancel();

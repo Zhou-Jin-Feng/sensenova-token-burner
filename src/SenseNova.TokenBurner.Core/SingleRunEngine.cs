@@ -8,24 +8,30 @@ public sealed class SingleRunEngine
     private readonly RunProtectionOptions _protection;
     private readonly TimeProvider _time;
     private readonly IRunCheckpoint? _checkpoint;
+    private readonly RequestConcurrencyLimiter? _limiter;
     private bool _persistenceFailed;
     private RunSnapshot _snapshot = RunSnapshot.Idle;
     private Session? _session;
 
-    public SingleRunEngine(IRunRequestExecutor executor, RunProtectionOptions? protection = null, TimeProvider? timeProvider = null)
+    public SingleRunEngine(IRunRequestExecutor executor, RunProtectionOptions? protection = null, TimeProvider? timeProvider = null,
+        RequestConcurrencyLimiter? limiter = null)
     {
         ArgumentNullException.ThrowIfNull(executor);
         _protection = protection ?? new();
         _protection.Validate();
         _executor = executor;
         _time = timeProvider ?? TimeProvider.System;
+        _limiter = limiter;
     }
 
     internal SingleRunEngine(IRunRequestExecutor executor, RunProtectionOptions? protection,
-        TimeProvider timeProvider, IRunCheckpoint checkpoint) : this(executor, protection, timeProvider)
+        TimeProvider timeProvider, IRunCheckpoint checkpoint, RequestConcurrencyLimiter? limiter = null)
+        : this(executor, protection, timeProvider, limiter)
         => _checkpoint = checkpoint;
 
     public RunSnapshot Snapshot { get { lock (_gate) return _snapshot; } }
+    public Task<RunSnapshot> WaitForCompletionAsync()
+    { lock (_gate) return _session?.Completion.Task ?? Task.FromResult(_snapshot); }
     internal bool HasActiveRun { get { lock (_gate) return _session is { Completion.Task.IsCompleted: false }; } }
 
     // 同一 Core 内的调度接缝：异常立即唤醒计划，不靠循环轮询，也不暴露原始异常。
@@ -35,6 +41,12 @@ public sealed class SingleRunEngine
     }
 
     public Task<RunSnapshot> RunAsync(RunParameters parameters, CancellationToken cancellationToken = default)
+        => StartAsync(parameters, null, cancellationToken);
+
+    internal Task<RunSnapshot> RunWithProgressAsync(RunParameters parameters, RunSnapshot progress, CancellationToken token)
+        => StartAsync(parameters, progress, token);
+
+    private Task<RunSnapshot> StartAsync(RunParameters parameters, RunSnapshot? progress, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(parameters);
         parameters.Validate();
@@ -49,7 +61,10 @@ public sealed class SingleRunEngine
                 throw new InvalidOperationException("上一轮仍需人工核查，确认后才能显式开始新轮。");
             session = new();
             _session = session;
-            _snapshot = new(RunState.Running, parameters, new(0, 0, 0), 0, 0, 0, null);
+            _snapshot = progress is null ? new(RunState.Running, parameters, new(0, 0, 0), 0, 0, 0, null)
+                : new(RunState.Running, parameters, progress.ConfirmedUsage, progress.CompletedRequests, 0,
+                    checked(progress.UnknownUsageRequests + progress.InFlightRequests), null)
+                { NotSentRequests = progress.NotSentRequests, RejectedRequests = progress.RejectedRequests };
             if (_checkpoint is null && (cancellationToken.IsCancellationRequested || parameters.TargetTokens == 0))
             {
                 FinishLocked(session, cancellationToken.IsCancellationRequested
@@ -70,6 +85,7 @@ public sealed class SingleRunEngine
             if (_snapshot.State != RunState.Running) return false;
             _session!.ResumeSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _snapshot = _snapshot with { State = RunState.Paused };
+            _session.ControlChanged.TrySetResult();
             return true;
         }
     }
@@ -170,6 +186,7 @@ public sealed class SingleRunEngine
             while (true)
             {
                 Task? resume = null;
+                Task? capacityWait = null;
                 TimeSpan? retryDelay = null;
                 // 先结算已完成结果，再决定补发，故障不得被新请求越过。
                 foreach (var task in pending.Where(task => task.IsCompleted).ToArray())
@@ -182,12 +199,19 @@ public sealed class SingleRunEngine
                 while (true)
                 {
                     bool dispatch;
+                    IDisposable? permit = null;
                     lock (_gate)
                     {
                         // WaitAsync 的取消回调可能先于注册回调运行；不能等回调才停止，否则同步取消会空转。
                         if (cancellationToken.IsCancellationRequested) ObserveLifecycleStopLocked(session);
                         dispatch = _snapshot.State == RunState.Running && !session.RetryPending
                             && !cancellationToken.IsCancellationRequested && CanDispatchLocked(parameters);
+                        if (dispatch && _limiter is not null)
+                        {
+                            var changed = _limiter.Changed;
+                            permit = _limiter.TryAcquire();
+                            if (permit is null) { dispatch = false; capacityWait = changed; }
+                        }
                         if (dispatch)
                             _snapshot = _snapshot with
                             {
@@ -198,6 +222,7 @@ public sealed class SingleRunEngine
                     if (!dispatch) break;
                     if (!await SaveCheckpointAsync().ConfigureAwait(false))
                     {
+                        permit?.Dispose();
                         lock (_gate) ReleaseUnsentReservationLocked(parameters);
                         break;
                     }
@@ -212,10 +237,11 @@ public sealed class SingleRunEngine
                     }
                     if (!dispatch)
                     {
+                        permit?.Dispose();
                         await SaveCheckpointAsync().ConfigureAwait(false);
                         break;
                     }
-                    pending.Add(ExecuteRequestAsync(parameters, session, cancellationToken));
+                    pending.Add(ExecuteWithPermitAsync(parameters, session, cancellationToken, permit));
                     if (pending.Any(task => task.IsCompleted)) break;
                 }
                 lock (_gate)
@@ -261,6 +287,13 @@ public sealed class SingleRunEngine
                 {
                     try { await resume.WaitAsync(cancellationToken).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+                }
+                else if (capacityWait is not null && pending.Count == 0)
+                {
+                    await Task.WhenAny(capacityWait, session.StopSignal.Task, session.ControlChanged.Task).ConfigureAwait(false);
+                    lock (_gate)
+                        if (session.ControlChanged.Task.IsCompleted)
+                            session.ControlChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 }
                 else if (retryDelay is { } delay)
                 {
@@ -370,6 +403,12 @@ public sealed class SingleRunEngine
         if (delay > _protection.MaximumRetryDelay || _snapshot.TotalRetryDelay + delay > _protection.MaximumTotalRetryDelay)
             return null; // 不缩短服务端要求，也不放大本地等待上限。
         return delay;
+    }
+
+    private async Task<RequestOutcome> ExecuteWithPermitAsync(RunParameters parameters, Session session,
+        CancellationToken token, IDisposable? permit)
+    {
+        using (permit) return await ExecuteRequestAsync(parameters, session, token).ConfigureAwait(false);
     }
 
     private async Task<RequestOutcome> ExecuteRequestAsync(RunParameters parameters, Session session, CancellationToken lifecycleToken)
@@ -513,6 +552,7 @@ public sealed class SingleRunEngine
 
     private sealed class Session
     {
+        public TaskCompletionSource ControlChanged { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<RunSnapshot> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource StopSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ProtectionSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

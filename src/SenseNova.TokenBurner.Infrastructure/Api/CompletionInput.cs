@@ -4,10 +4,11 @@ using SenseNova.TokenBurner.Core;
 
 namespace SenseNova.TokenBurner.Infrastructure.Api;
 
-/// <summary>沿用旧脚本的大段技术文本结构；预留是待真实校准的估计，并非tokenizer结果。</summary>
+/// <summary>沿用旧脚本的大段技术文本结构；预留参考真实单请求留余量，并非tokenizer结果或费用硬上限。</summary>
 public static class CompletionInput
 {
-    public const long EstimatedInputTokens = 200_000;
+    // 2026-10-06真实340000字符请求输入217828 tokens；留约10%余量，仍低于262144上下文。
+    public const long EstimatedInputTokens = 240_000;
     public static CompletionRequest Create(CancellationToken cancellationToken = default)
     {
         string[] topics = ["跨区域清算与一致性", "时钟校准与事件因果", "高并发内存屏障", "日志复制与故障恢复", "混沌工程与容量规划"];

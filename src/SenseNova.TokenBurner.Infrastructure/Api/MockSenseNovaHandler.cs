@@ -27,7 +27,8 @@ public sealed class MockSenseNovaHandler(MockScenario scenario = MockScenario.Su
         await Task.Delay(delay ?? TimeSpan.FromMilliseconds(80), cancellationToken);
         if (request.RequestUri is not { Scheme: "https", Host: "token.sensenova.cn" })
             return Reply(HttpStatusCode.BadRequest, "{}");
-        if (request.Headers.Authorization?.Scheme != "Bearer" || request.Headers.Authorization.Parameter != MockCredential.Value
+        if (request.Headers.Authorization?.Scheme != "Bearer" || !(request.Headers.Authorization.Parameter == MockCredential.Value
+            || request.Headers.Authorization.Parameter?.StartsWith(MockCredential.Value + "-", StringComparison.Ordinal) == true)
             || scenario == MockScenario.AuthenticationFailure)
             return Reply(HttpStatusCode.Unauthorized, "{\"error\":{\"message\":\"mock secret must not be echoed\"}}");
         if (scenario == MockScenario.QuotaOrRateLimit)

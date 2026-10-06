@@ -5,6 +5,8 @@ public static class ConsumptionPolicy
 {
     public const int DefaultPercentage = 95;
     public const int MaximumPercentage = 95;
+    // 自定义目标独立于比例档位；范围仅用于数值/累计保护，不代表积分安全上限。
+    public const long MaximumTargetTokens = 1_000_000_000_000;
 
     private static readonly (int Percentage, long Tokens)[] Calibration =
     [
