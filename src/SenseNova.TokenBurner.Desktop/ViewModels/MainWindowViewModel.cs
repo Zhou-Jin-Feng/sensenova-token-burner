@@ -351,6 +351,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
     {
         if (!_preparingInput && _session is not null && (_session.CurrentRun.State != RunState.Idle || !_runActive))
             _run = _session.CurrentRun.State == RunState.Idle ? Recovery.Document?.CurrentRun?.Snapshot ?? RunSnapshot.Idle : _session.CurrentRun;
+        if (_runActive && !_preparingInput) _statusText = RunStateLabel;
         // 空名称表示整批属性更新；Form只需同步一次，避免每个标签触发全量控件更新。
         Notify(string.Empty);
         StartRunCommand.Refresh(); ConfirmRecoveryCommand.Refresh();

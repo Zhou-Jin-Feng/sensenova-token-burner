@@ -51,6 +51,37 @@ public sealed class ManualPanelRunTests
     }
 
     [TestMethod]
+    public async Task RunningAndPausedStatusNeverClaimConsumptionHasNotStarted()
+    {
+        var inputReady = new TaskCompletionSource<CompletionRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new PanelClient();
+        await using var vm = new MainWindowViewModel(client, mockMode: false,
+            runStore: new MemoryRunStateStore(), createInput: token => inputReady.Task.WaitAsync(token))
+            { ApiKey = MockCredential.Value, Percentage = 1 };
+        await vm.InitializeAsync();
+        await vm.ReadModelsAsync();
+        var pending = vm.StartRunAsync();
+        Assert.IsTrue(vm.StatusText.Contains("尚未开始消耗", StringComparison.Ordinal));
+        inputReady.SetResult(await Input(CancellationToken.None));
+        await UntilAsync(() => client.Pending.Count == 3 && vm.Run.State == RunState.Running);
+        Assert.IsFalse(vm.StatusText.Contains("尚未开始消耗", StringComparison.Ordinal),
+            "请求开始后不能继续展示准备期提示。");
+        vm.PauseRun();
+        Assert.IsTrue(vm.StatusText.Contains("暂停", StringComparison.Ordinal));
+        foreach (var request in client.Pending) request.TrySetResult(new(170_000, 8, 170_008));
+        await UntilAsync(() => vm.Run.InFlightRequests == 0);
+        vm.ResumeRun();
+        Assert.IsTrue(vm.StatusText.Contains("运行中", StringComparison.Ordinal));
+        await UntilAsync(() => client.Pending.Count > 3);
+        var stopping = vm.StopRunAsync();
+        foreach (var request in client.Pending) request.TrySetResult(new(170_000, 8, 170_008));
+        await stopping.WaitAsync(Deadline);
+        await pending.WaitAsync(Deadline);
+        Assert.AreEqual(RunState.Stopped, vm.Run.State);
+        Assert.IsFalse(vm.StatusText.Contains("尚未开始消耗", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task PauseResumeStopAndRepeatStartKeepOneRoundAndPersistBeforeDispatch()
     {
         var client = new PanelClient();
