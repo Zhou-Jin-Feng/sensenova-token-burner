@@ -45,6 +45,15 @@ internal sealed class MainForm : Form
     private bool _updating;
     private bool _closing;
     private bool _readyToClose;
+    private bool _exitRequested;
+    private FormWindowState _restoreWindowState = FormWindowState.Normal;
+    private readonly NotifyIcon _tray = new();
+    private readonly ContextMenuStrip _trayMenu = new();
+    private readonly ToolStripMenuItem _trayStatus = new() { Enabled = false };
+    private readonly ToolStripMenuItem _trayShow = new("显示面板");
+    private readonly ToolStripMenuItem _trayStop = new("停止本轮");
+    private readonly ToolStripMenuItem _trayDisablePlan = new("关闭未来计划");
+    private readonly ToolStripMenuItem _trayExit = new("退出");
 
     public MainForm(MainWindowViewModel viewModel)
     {
@@ -128,10 +137,10 @@ internal sealed class MainForm : Form
         footer.Controls.Add(_runUsage);
         footer.Controls.Add(_runDetail);
         footer.Controls.Add(_runFailure);
-        footer.Controls.Add(new Label { Text = "开始后按本轮目标运行；暂停停止新增请求，停止收齐在途结果。关闭窗口当前退出。", AutoSize = true });
+        footer.Controls.Add(new Label { Text = "关闭或最小化隐藏到托盘继续运行；“退出”关闭计划并收尾。", AutoSize = true });
         var actions = new FlowLayoutPanel { AutoSize = true };
         var exit = new Button { Text = "退出", AutoSize = true };
-        exit.Click += (_, _) => Close();
+        exit.Click += (_, _) => RequestExit();
         _probe.Visible = viewModel.IsMockMode;
         actions.Controls.AddRange([_start, _pause, _resume, _stop, _probe, _cancel, exit]);
         footer.Controls.Add(actions);
@@ -162,6 +171,23 @@ internal sealed class MainForm : Form
         _remember.CheckedChanged += (_, _) => { if (!_updating) _viewModel.RememberCredential = _remember.Checked; };
         _models.SelectedIndexChanged += (_, _) => { if (!_updating) _viewModel.SelectedModel = _models.SelectedItem as ModelInfo; };
         _viewModel.PropertyChanged += ViewModelChanged;
+        _trayMenu.Items.AddRange([_trayStatus, new ToolStripSeparator(), _trayShow, _trayStop, _trayDisablePlan,
+            new ToolStripSeparator(), _trayExit]);
+        _tray.Icon = SystemIcons.Application;
+        _tray.Text = "SenseNova Token Burner";
+        _tray.ContextMenuStrip = _trayMenu;
+        _tray.DoubleClick += (_, _) => RestoreFromTray();
+        _trayShow.Click += (_, _) => RestoreFromTray();
+        _trayStop.Click += async (_, _) => await _viewModel.StopRunAsync();
+        _trayDisablePlan.Click += async (_, _) => await _viewModel.DisableScheduleAsync();
+        _trayExit.Click += (_, _) => RequestExit();
+        _trayMenu.Opening += (_, _) => UpdateTrayState();
+        Shown += (_, _) => _tray.Visible = true;
+        Resize += (_, _) =>
+        {
+            if (WindowState == FormWindowState.Minimized) HideToTray();
+            else _restoreWindowState = WindowState;
+        };
         FormClosing += CloseAfterOperations;
         UpdateFromViewModel();
     }
@@ -177,11 +203,16 @@ internal sealed class MainForm : Form
         return card;
     }
 
-    private void ViewModelChanged(object? sender, PropertyChangedEventArgs args) => UpdateFromViewModel();
+    private void ViewModelChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (Visible) UpdateFromViewModel();
+        else UpdateTrayState();
+    }
 
     private void UpdateFromViewModel()
     {
         if (IsDisposed) return;
+        UpdateTrayState();
         _updating = true;
         try
         {
@@ -231,14 +262,64 @@ internal sealed class MainForm : Form
         finally { _updating = false; }
     }
 
+    private void UpdateTrayState()
+    {
+        if (IsDisposed) return;
+        var state = _viewModel.IsRunActive ? _viewModel.RunStateLabel
+            : _viewModel.ScheduleEnabled ? "等待计划运行" : "计划关闭";
+        var label = _closing ? "正在收尾退出" : state;
+        _trayStatus.Text = label;
+        var tooltip = "SenseNova Token Burner · " + label;
+        if (_tray.Text != tooltip) _tray.Text = tooltip;
+        _trayShow.Enabled = !_closing;
+        _trayStop.Enabled = !_closing && _viewModel.IsRunActive;
+        _trayDisablePlan.Enabled = !_closing && _viewModel.CanDisableSchedule;
+        _trayExit.Enabled = !_closing;
+    }
+
+    private void HideToTray()
+    {
+        if (_exitRequested || _closing || IsDisposed) return;
+        if (WindowState != FormWindowState.Minimized) _restoreWindowState = WindowState;
+        _tray.Visible = true;
+        Hide();
+    }
+
+    private void RestoreFromTray()
+    {
+        if (_exitRequested || _closing || IsDisposed) return;
+        // Show可恢复原生窗口缓存的最小化placement，须显示后再设置目标状态。
+        Show();
+        WindowState = _restoreWindowState;
+        UpdateFromViewModel();
+        Activate();
+    }
+
+    internal void RequestExit()
+    {
+        if (_exitRequested || IsDisposed) return;
+        _exitRequested = true;
+        Close();
+    }
+
     private async void CloseAfterOperations(object? sender, FormClosingEventArgs args)
     {
         if (_readyToClose) return;
+        if (!_exitRequested && args.CloseReason == CloseReason.UserClosing)
+        {
+            args.Cancel = true;
+            HideToTray();
+            return;
+        }
+        // 系统结束会话或Application.Exit不能被隐藏到托盘吞掉。
+        _exitRequested = true;
         args.Cancel = true;
         if (_closing) return;
         _closing = true;
+        UpdateTrayState();
         await _viewModel.DisposeAsync();
         _readyToClose = true;
+        _tray.Visible = false;
         // 清理可能同步完成，最终 Close 必须排到当前 FormClosing 事件返回后。
         BeginInvoke(new Action(Close));
     }
@@ -249,6 +330,9 @@ internal sealed class MainForm : Form
         base.Dispose(disposing);
         if (disposing)
         {
+            _tray.Visible = false;
+            _tray.Dispose();
+            _trayMenu.Dispose();
             _headingFont.Dispose();
             _sectionFont.Dispose();
             _panelFont.Dispose();

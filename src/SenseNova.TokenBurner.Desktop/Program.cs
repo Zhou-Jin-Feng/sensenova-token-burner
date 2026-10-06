@@ -55,7 +55,7 @@ internal static class Program
         using var lifetime = new CancellationTokenSource();
         using var form = new MainForm(viewModel);
         var exitCode = 0;
-        form.FormClosing += (_, _) => lifetime.Cancel();
+        form.FormClosed += (_, _) => lifetime.Cancel();
         form.Shown += async (_, _) =>
         {
             await viewModel.InitializeAsync();
@@ -75,7 +75,7 @@ internal static class Program
                 else await ResourceProbe.RunAsync(options, viewModel, (MockSenseNovaHandler)handler, lifetime.Token);
             }
             catch (Exception) { exitCode = 1; }
-            if (!lifetime.IsCancellationRequested) form.Close();
+            if (!lifetime.IsCancellationRequested) form.RequestExit();
         };
         Application.Run(form);
         return exitCode;
