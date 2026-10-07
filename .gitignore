@@ -1,5 +1,6 @@
 # Agent 工作资料
 agent/
+.serena/
 
 # 本地凭据与运行数据
 .env
