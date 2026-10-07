@@ -1,66 +1,62 @@
-# Windows预览安装包
+# Windows 安装包
 
-更新：2026-10-06。新版多key MVP候选为0.2.0-preview.1，准备状态另见末节；自带.NET10.0.12运行时。当前GitHub公开仅旧单key[v0.1.0-preview.1](https://github.com/Zhou-Jin-Feng/sensenova-token-burner/releases/tag/v0.1.0-preview.1)。旧preview.2候选35.60MiB未提交/发布，不能当新版下载。下文保留历史安装与校准记录。
+## 下载与校验
 
-新版候选自包含发布及安装器编译成功：Setup 37,347,879字节（35.62MiB），安装文件117.70MiB，SHA-256 `5541702d2870a8bc96864825f39cbd61736ec729fa749c130ed7aea6ea11d731`。版本0.2.0-preview.1含多key/备注、独立目标计划、全局并发、额度组、剩余目标恢复及通知；新使用说明同步随包。不含tasks/settings/run-state/凭据文件、agent/.local或调试符号。安装/升级/真实key未执行，新包未推送或发布；源码验收见[新版MVP验收](新版MVP验收.md)。
+从 GitHub Release 下载三个文件：
 
-新版包括多key/备注、独立配置、共享并发、额度组、剩余恢复和完成通知，详见[新版MVP范围](新版MVP范围.md)。旧首版范围保留作历史，使用步骤见[首次使用](首次使用.md)。
+- `SenseNova.TokenBurner-<版本>-win-x64-setup.exe`：安装程序
+- `SHA256SUMS.txt`：安装程序的 SHA-256
+- `首次使用.md`：使用说明（安装后程序目录里也有一份）
 
-## 安装与用户数据
+安装程序未签名。下载后建议在 PowerShell 里核对哈希，与 `SHA256SUMS.txt` 一致再运行：
 
-双击Setup按中文向导安装，默认目录为`%LOCALAPPDATA%\Programs\SenseNova Token Burner`，当前用户安装，无需管理员权限。开始菜单提供入口，桌面快捷方式可选。安装不设置开机启动、服务或计划任务，不强制关闭运行中的程序；升级前应从面板或托盘“退出”。
+```powershell
+Get-FileHash .\SenseNova.TokenBurner-1.0.0-win-x64-setup.exe -Algorithm SHA256
+```
 
-配置、加密key与运行证据位于`%LOCALAPPDATA%\SenseNova.TokenBurner\User`。程序目录和用户数据分开，卸载不删除用户数据；本轮未读写已有真实用户目录。
+Windows 可能提示“未知发布者”或 SmartScreen 拦截，请确认下载来源后再选择继续。
 
-包内没有私有agent资料、项目.local缓存、key、运行日志或PDB，附带首次使用说明及.NET随包许可。应用及Setup未签名，来源和Windows提示需由使用者核对；这不能写成无提示安装验收。开源许可证选择仍待确认，本轮没有擅自添加项目许可证。
+## 系统要求
 
-## 可复现打包
+- Windows 11 x64（安装程序要求 10.0.22000 及以上）。
+- 自带 .NET 10.0.12 运行时，无需另外安装 .NET、Python 或开发工具。
+- 运行需要联网和有效的 SenseNova API key。
 
-准备固定SDK10.0.401，然后在PowerShell运行：
+## 安装、升级与卸载
+
+- 安装：中文向导，仅为当前用户安装，不需要管理员权限。默认目录 `%LOCALAPPDATA%\Programs\SenseNova Token Burner`，会创建开始菜单入口，桌面快捷方式可选。不会设置开机启动、服务或计划任务。
+- 升级：先从面板或托盘“退出”正在运行的旧版本（安装程序不会强制关闭它），再运行新安装程序覆盖安装。配置、加密 key 和运行记录都会保留。
+- 降级：新版本写入的配置旧版本可能无法读取；如果打算退回旧版本，升级前请先备份用户数据目录。
+- 卸载：在 Windows“设置 → 应用”中卸载。用户数据不会被删除；如果需要彻底清除，再手动删除 `%LOCALAPPDATA%\SenseNova.TokenBurner`。
+
+用户数据（`%LOCALAPPDATA%\SenseNova.TokenBurner\User`）和程序目录分开存放。API key 按当前 Windows 用户以 DPAPI 加密，只能在同一台电脑、同一个 Windows 用户下解密；换电脑需要重新添加 key。
+
+## 包内容
+
+自包含多文件发布，不裁剪，包含程序、.NET 运行时、`首次使用.md` 和 `ThirdPartyNotices`（.NET 及 DPAPI 组件的许可说明）。构建脚本会检查并拒绝把配置、凭据、运行记录、日志、调试符号或私有目录打进包里。
+
+## 自行构建
+
+需要 SDK 10.0.401（见 global.json）和 PowerShell 7。在项目根目录执行：
 
 ```powershell
 & .\scripts\prepare-installer-tool.ps1
-& .\scripts\build-installer.ps1
+& .\scripts\build-installer.ps1 -Version 1.0.0
 ```
 
-默认版本`0.1.0-preview.1`，可传`-Version`；编译器可传`-CompilerPath`。Inno Setup7.1.0只在忽略目录.local/tools准备，官方下载按GitHub release SHA-256和Authenticode核对，portable模式不注册工具卸载项或快捷方式。官方来源：[release](https://github.com/jrsoftware/issrc/releases/tag/is-7_1_0)、[portable模式实现](https://github.com/jrsoftware/issrc/blob/is-7_1_0/isportable.iss)、[许可证](https://github.com/jrsoftware/issrc/blob/is-7_1_0/license.txt)。
+`prepare-installer-tool.ps1` 在忽略目录 `.local/tools` 里准备便携版 Inno Setup 7.1.0：先按官方 GitHub release 的 SHA-256 和 Authenticode 签名核对，便携模式不注册卸载项或快捷方式（[release](https://github.com/jrsoftware/issrc/releases/tag/is-7_1_0)、[许可证](https://github.com/jrsoftware/issrc/blob/is-7_1_0/license.txt)）。
 
-Windows安装脚本位于`installer/windows.iss`。发布从Desktop执行Release/win-x64/self-contained，多文件包，不启用裁剪；带固定10.0.12运行时。win-x64依赖使用三个项目各自的`packages.win-x64.lock.json`，开发锁不变；首次缺锁生成，之后locked还原。首次生成新的发布锁需复核后提交，普通构建不更新已有锁。
+`build-installer.ps1` 以 Release/win-x64/self-contained 发布 Desktop，固定运行时 10.0.12，用各项目的 `packages.win-x64.lock.json` 按锁定模式还原；再用 `installer/windows.iss` 编译安装程序。
 
-输出位于`.local/releases/<version>-<UTC-id>/`：publish目录、artifacts目录、构建日志及manifest.json。artifacts包含Setup.exe、SHA256SUMS.txt和首次使用.md。manifest记录包内文件、字节数、构建时源码HEAD及是否含未提交修改；本次构建时包含未提交的托盘和打包改动，这些改动随后已提交并推送。保留原manifest，不把后续HEAD回填为构建来源。
+输出位于 `.local/releases/<版本>-<UTC 时间>-<随机 ID>/`：
 
-## 本轮必要验证
+- `publish/`：发布目录；
+- `artifacts/`：安装程序、`SHA256SUMS.txt` 和 `首次使用.md`；
+- 构建日志；
+- `manifest.json`：记录包内文件、字节数、构建时的源码提交，以及工作区是否有未提交改动。
 
-- 自包含publish与Inno编译成功；includedFrameworks固定Microsoft.NETCore.App及Microsoft.WindowsDesktop.App10.0.12。
-- 新建隔离目标，在没有已有本产品卸载注册项的前提下静默安装成功，退出0；277个安装文件SHA-256与发布目录一致。
-- 临时将子进程DOTNET_ROOT设为不存在、PATH限为System32，自包含入口成功加载。使用未识别参数在实例锁、用户数据与HTTP之前按设计返回1；这只证明入口加载，不能当完整窗口运行。
-- 注册卸载目标确认属于本轮新建工作区后，通过自身卸载器卸载成功，退出0；本产品临时注册项和可执行文件已清理。没有删除用户数据或结束已有进程。
-- 包内私有路径0，SHA256SUMS与Setup吻合；本次无真实key或请求。不重复引擎全量测试和资源测量，沿用托盘299项已验证基线。
+## 已知限制
 
-本机产物目录：`.local/releases/0.1.0-preview.1-20261006-084117-f6e0a6e9/artifacts/`。Setup SHA-256：
-
-```text
-da74f9d74d1198d9dabb439788556bd42c8fc5c4bf6c17c97e47a27dbc8c080a
-```
-
-静默安装/卸载原始结果在`.local/verification/installer/ff6aecf349514475821237a29675847d/result.json`。自查结论`PASS WITH NOTES`：本地安装产物和必要静默检查通过，完整向导/外部窗口、填key运行与真实官方扣减/返赠未验证，也未在无SDK的新Windows系统复验。旧模拟实例会触发单实例保护，完整打开确认需要正常退出旧实例；不能强杀绕过。
-
-## 后续基本启动与真实短调用
-
-2026-10-06：旧模拟实例由用户正常退出后，现有Setup在当前用户默认目录新安装成功（退出0）；正式入口创建`SenseNova Token Burner`窗体，进程正常响应。完整向导/外部鼠标输入、视觉和无SDK新系统仍未验证。
-
-用户批准真实key小规模测试后，固定官方地址GET模型成功，返回9个模型；活动模型`sensenova-6.8-flash-lite`上下文262144、最大输出65536。复用该安装包Core/Infrastructure DLL，独立临时运行记录和外层HTTP限制，合计仅1GET与1POST，均HTTP200，无自动重试或周期计划。短请求8字符、最大输出32；官方usage输入87、输出32、总119 tokens。持久引擎暂停后停止，Stopped/UserStop、完成1笔、0在途/未知/预留，最终落盘usage一致，探针退出0。
-
-测试通过的是正式HTTP/引擎/落盘路径，不是实际点击安装窗口或34万字符输入校准；不证明专属积分扣减、通用积分返赠或任意初始余额下不扣通用积分。原请求、回答正文和key均未写入报告，未修改真实用户配置或旧脚本。最新最小复查结论`PASS WITH NOTES`：可准备预览MVP；上述边界在Release说明中保留，不追加消耗或反复测试。
-
-首个MVP采用预览版交付，上述边界在[Release说明](https://github.com/Zhou-Jin-Feng/sensenova-token-burner/releases/tag/v0.1.0-preview.1)保留。原异常原因/长期等待、普通窗口等待102.41MiB略超目标等限制保留，见 [托盘报告](托盘与退出.md)、[资源报告](资源基线测量.md)。
-
-## 单笔生产输入校准与修正候选
-
-2026-10-06获准再执行仅1笔34万字符生产请求，最大输出1024，无额外GET、重试或周期。HTTP200，约31.35秒；实际输入217828、输出1024、总218852 tokens，超过旧版200000输入/201024总预留。因此`0.1.0-preview.1`可能在首批请求结算后触发BudgetEstimateExceeded并停止新增，真实HTTP成功不代表整轮可持续运行。
-
-旧本地候选0.1.0-preview.2输入预留240000，总241024；观测上方约10%余量，仍小于262144上下文。离线回放与52项通过，未追加真实调用。候选未发布；该修正已纳入新版多key，不能将尚未公开的preview.2链接当下载入口。
-
-单样本只说明此次输入在新估计内，不是tokenizer保证或积分上限；完整目标、积分扣减来源和返赠仍未验证。
-
-修正版安装包：`SenseNova.TokenBurner-0.1.0-preview.2-win-x64-setup.exe`约35.60MiB，安装文件277项；SHA-256为`4b33255f4896f35ed057361add001b9c4aa1dadaa38e7183fb251c4c4c4e4315`。自包含发布及安装器编译成功，打包DLL离线预检确认240000输入/241024总预留、0请求。没有覆盖正在运行的preview.1，也不重复安装/资源或真实调用；本轮未验证修正版实际升级。发布附件的大小与GitHub SHA-256在上传时核对。
+- 程序和安装程序均未代码签名。
+- 只在开发机上验证过；没有在全新的 Windows 系统、其他设备或真实高 DPI 屏幕上做完整安装验收。
+- 官方积分的扣减来源和返赠到账以 SenseNova 官方记录为准，客户端无法查询或保证。
