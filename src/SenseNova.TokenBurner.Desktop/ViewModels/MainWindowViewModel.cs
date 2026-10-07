@@ -352,7 +352,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
                 _executor.Bind(new CompletionRunExecutor((ISenseNovaCompletionClient)_client!, credential, model, input));
                 var parameters = new RunParameters(model.Id, target)
                 {
-                    MaximumConcurrency = RequestBaseline.Concurrency,
+                    MaximumConcurrency = RequestBaseline.DefaultConcurrency,
                     RequestTokenReservation = input.EstimatedTotalTokens
                 };
                 _preparingInput = false;
@@ -443,7 +443,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IAsyncDisposab
                 _preparingInput = false;
                 var parameters = new RunParameters(model.Id, target)
                 {
-                    MaximumConcurrency = RequestBaseline.Concurrency,
+                    MaximumConcurrency = RequestBaseline.DefaultConcurrency,
                     RequestTokenReservation = input.EstimatedTotalTokens
                 };
                 var pending = _session!.RunOnceAsync(parameters, cancellationToken);

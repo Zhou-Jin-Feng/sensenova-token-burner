@@ -107,6 +107,27 @@ internal sealed class RunStateJournal(IRunStateStore store, TimeProvider time) :
         finally { _writes.Release(); }
     }
 
+    public async Task ResetProgressAsync(CancellationToken cancellationToken)
+    {
+        await _writes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureCanStart();
+            if (_active) throw new InvalidOperationException("当前轮尚未收尾，不能重置进度。");
+            var document = Snapshot.Document!;
+            var current = document.CurrentRun;
+            // Ready下无ReviewRequired的未知计数可来自已核查的续跑历史；新的未知必定触发核查保护。
+            if (current is { ReviewedUtc: null } && (!RunStateDocument.IsTerminal(current.Snapshot.State)
+                || current.Snapshot.ReviewRequired))
+                throw new InvalidOperationException("存在未知用量，请先核查再重置。");
+            var history = current is null ? document.History
+                : document.History.Append(current).TakeLast(RunStateDocument.MaximumHistory).ToArray();
+            await CommitAsync(document with { CurrentRun = null, History = history, PlanRequested = false }, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally { _writes.Release(); }
+    }
+
     private DateTimeOffset LaterNow(DateTimeOffset previous)
     {
         var now = time.GetUtcNow().ToUniversalTime();

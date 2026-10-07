@@ -68,6 +68,21 @@ public sealed class RunSchedulerTests
     }
 
     [TestMethod]
+    public async Task CanceledEnablePropagatesCancellationToImmediateRun()
+    {
+        var time = new ManualRunTimeProvider();
+        var requests = new ControlledRunExecutor();
+        var scheduler = new RunScheduler(new(requests, timeProvider: time), time);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.IsTrue(scheduler.Enable(Plan(), cancellation.Token));
+        await UntilAsync(() => scheduler.Snapshot.CurrentRun.State == RunState.Stopped);
+        Assert.AreEqual(0, requests.StartedCount, "首轮收到取消后不得进入执行器。");
+        await scheduler.DisableAsync().WaitAsync(Deadline);
+    }
+
+    [TestMethod]
     public async Task DefaultScheduleStartsImmediatelyThenAtAnchoredFiveHours()
     {
         var time = new ManualRunTimeProvider();

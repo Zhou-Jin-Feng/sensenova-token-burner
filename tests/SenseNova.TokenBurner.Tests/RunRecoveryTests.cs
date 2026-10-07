@@ -14,6 +14,38 @@ public sealed class RunRecoveryTests
     private static RunParameters Parameters(long target = 100) => new("mock-model", target) { RequestTokenReservation = 100 };
 
     [TestMethod]
+    public async Task ResetWriteFailureRetainsDurableProgressAndBlocksNewRun()
+    {
+        var snapshot = new RunSnapshot(RunState.Stopped, Parameters(), new(36, 4, 40), 4, 0, 0, null);
+        var now = DateTimeOffset.UtcNow;
+        var original = RunStateDocument.Empty with { CurrentRun = new(Guid.NewGuid(), now, now, snapshot) };
+        var store = new MemoryRunStateStore { Document = original, FailAt = 2 }; // 确认第1写，归档第2写失败。
+        var requests = new ControlledRunExecutor(); var runtime = new PersistentRunSession(requests, store);
+        await runtime.InitializeAsync(); await runtime.ConfirmRecoveryAsync();
+        await Assert.ThrowsExactlyAsync<LocalStorageException>(() => runtime.ResetProgressAsync());
+        Assert.AreEqual(original.CurrentRun, store.Document!.CurrentRun);
+        Assert.AreEqual(snapshot, runtime.Recovery.Document!.CurrentRun!.Snapshot);
+        Assert.AreEqual(RecoveryState.StorageFailed, runtime.Recovery.State);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => runtime.RunOnceAsync(Parameters()));
+        Assert.AreEqual(0, requests.StartedCount);
+    }
+
+    [TestMethod]
+    public async Task ResetAfterLiveRunWriteFailureDoesNotClearInMemoryProgress()
+    {
+        var requests = new ControlledRunExecutor(); var store = new MemoryRunStateStore { FailAt = 5 };
+        var runtime = new PersistentRunSession(requests, store); await runtime.InitializeAsync();
+        var run = runtime.RunOnceAsync(Parameters());
+        (await requests.NextAsync()).Complete(new(90, 10, 100));
+        var completed = await run.WaitAsync(Deadline); // 开轮、发前、结算、终态共4写。
+        await Assert.ThrowsExactlyAsync<LocalStorageException>(() => runtime.ResetProgressAsync());
+        Assert.AreEqual(completed, runtime.CurrentRun); Assert.AreEqual(completed, store.Document!.CurrentRun!.Snapshot);
+        Assert.AreEqual(RecoveryState.StorageFailed, runtime.Recovery.State);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => runtime.RunOnceAsync(Parameters()));
+        Assert.AreEqual(1, requests.StartedCount);
+    }
+
+    [TestMethod]
     public async Task UninitializedSessionCannotRunOrEnableAndFreshInitializationSendsNothing()
     {
         var requests = new ControlledRunExecutor();

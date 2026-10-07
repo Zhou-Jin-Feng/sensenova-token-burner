@@ -5,7 +5,14 @@
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
     <AssemblyName>SenseNova.TokenBurner</AssemblyName>
+    <!-- 界面控件全部由代码创建，不进入 WinForms 设计器，无需设计器序列化配置。 -->
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
+    <!-- 由 Ui/Visuals.cs 中 BrandMark 的同一套矢量绘制生成，exe、快捷方式和卸载项共用。 -->
+    <ApplicationIcon>Assets/app.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SenseNova.TokenBurner.Tests" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../SenseNova.TokenBurner.Core/SenseNova.TokenBurner.Core.csproj" />
     <ProjectReference Include="../SenseNova.TokenBurner.Infrastructure/SenseNova.TokenBurner.Infrastructure.csproj" />

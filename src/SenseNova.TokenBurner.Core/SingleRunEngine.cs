@@ -78,6 +78,24 @@ public sealed class SingleRunEngine
         return session.Completion.Task;
     }
 
+    internal void EnsureCanReset()
+    {
+        lock (_gate)
+        {
+            if (_session is { Completion.Task.IsCompleted: false } || _snapshot.ReviewRequired || _persistenceFailed)
+                throw new InvalidOperationException("当前轮尚未收尾或记录仍需核查，不能重置。");
+        }
+    }
+    internal void ResetProgress()
+    {
+        lock (_gate)
+        {
+            EnsureCanReset();
+            _snapshot = RunSnapshot.Idle;
+            _session = null;
+        }
+    }
+
     public bool Pause()
     {
         lock (_gate)

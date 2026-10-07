@@ -38,7 +38,8 @@ public sealed class SenseNovaApiException : Exception
 
 public static class RequestBaseline
 {
-    public const int Concurrency = 3;
+    public const int Concurrency = 10;
+    public const int DefaultConcurrency = 3;
     public const int InputCharacterTarget = 340_000;
     public const int MaximumOutputTokens = 1024;
     public const int ProbeOutputTokens = 32;

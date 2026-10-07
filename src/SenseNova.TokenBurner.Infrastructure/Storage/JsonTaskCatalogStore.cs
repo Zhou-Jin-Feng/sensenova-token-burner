@@ -8,6 +8,7 @@ namespace SenseNova.TokenBurner.Infrastructure.Storage;
 public sealed class JsonTaskCatalogStore(string directory, StorageProfile profile = StorageProfile.User) : ITaskCatalogStore
 {
     private readonly string _directory = Path.GetFullPath(directory);
+    public string RootDirectory => _directory;
     private readonly SemaphoreSlim _writes = new(1, 1);
     private string CatalogPath => Path.Combine(_directory, "tasks.json");
     private static readonly JsonSerializerOptions Options = new()

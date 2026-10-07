@@ -75,15 +75,38 @@ public sealed class TaskWorkspace(JsonTaskCatalogStore store)
         finally { _changes.Release(); }
     }
 
-    public async Task SetConcurrencyAsync(int maximum, CancellationToken token = default)
+    public async Task SetConcurrencyAsync(int maximum, int? perKey = null, CancellationToken token = default)
     {
         await _changes.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            var updated = Catalog with { MaximumConcurrency = maximum };
+            var updated = Catalog with { MaximumConcurrency = maximum, PerKeyConcurrency = perKey ?? Catalog.PerKeyConcurrency };
             updated.Validate();
             await store.SaveAsync(updated, token).ConfigureAwait(false);
             _catalog = updated;
+        }
+        finally { _changes.Release(); }
+    }
+
+    /// <summary>先从索引移除再删除任务目录；目录被占用等原因删不掉时返回该目录（已不被引用），不再抛出。</summary>
+    public async Task<string?> DeleteAsync(Guid id, CancellationToken token = default)
+    {
+        await _changes.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var task = Catalog.Tasks.SingleOrDefault(item => item.Id == id) ?? throw new ArgumentException("任务不存在。");
+            if (task.UsesLegacyStorage) throw new InvalidOperationException("旧版任务不能从这里删除，请先完成迁移保护。");
+            var updated = Catalog with { Tasks = Catalog.Tasks.Where(item => item.Id != id).ToArray() };
+            await store.SaveAsync(updated, token).ConfigureAwait(false);
+            _catalog = updated;
+            var directory = store.TaskDirectory(task);
+            try
+            {
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+                return null;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            { return directory; }
         }
         finally { _changes.Release(); }
     }

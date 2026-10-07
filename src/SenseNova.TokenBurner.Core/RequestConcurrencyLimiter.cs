@@ -1,7 +1,7 @@
 namespace SenseNova.TokenBurner.Core;
 
 /// <summary>全应用共享许可；等待不占在途预算，不启动独立进程。</summary>
-public sealed class RequestConcurrencyLimiter(int maximum = RequestBaseline.Concurrency)
+public sealed class RequestConcurrencyLimiter(int maximum = RequestBaseline.DefaultConcurrency)
 {
     private readonly object _gate = new();
     private int _active;

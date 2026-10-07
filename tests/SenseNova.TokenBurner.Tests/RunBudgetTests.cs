@@ -13,7 +13,7 @@ public sealed class RunBudgetTests
 
     [TestMethod]
     [DataRow(0, 100L)]
-    [DataRow(4, 100L)]
+    [DataRow(11, 100L)]
     [DataRow(3, 0L)]
     [DataRow(1, -1L)]
     [DataRow(1, 120_000_001L)]

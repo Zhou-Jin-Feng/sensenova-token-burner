@@ -37,11 +37,14 @@ public sealed record TaskConfiguration
 
 public sealed record TaskCatalog(int SchemaVersion, int MaximumConcurrency, TaskConfiguration[] Tasks)
 {
-    public static TaskCatalog Empty => new(1, RequestBaseline.Concurrency, []);
+    /// <summary>单个key同时在途的请求上限；旧配置缺省为3，与全应用共享上限分开限制。</summary>
+    public int PerKeyConcurrency { get; init; } = RequestBaseline.DefaultConcurrency;
+    public static TaskCatalog Empty => new(1, RequestBaseline.DefaultConcurrency, []);
     public void Validate()
     {
-        if (SchemaVersion != 1 || MaximumConcurrency is < 1 or > RequestBaseline.Concurrency || Tasks is null)
-            throw new ArgumentException("任务配置版本或全局并发无效。");
+        if (SchemaVersion != 1 || MaximumConcurrency is < 1 or > RequestBaseline.Concurrency || Tasks is null
+            || PerKeyConcurrency is < 1 or > RequestBaseline.Concurrency)
+            throw new ArgumentException("任务配置版本或并发上限无效。");
         var ids = new HashSet<Guid>();
         foreach (var task in Tasks)
         {

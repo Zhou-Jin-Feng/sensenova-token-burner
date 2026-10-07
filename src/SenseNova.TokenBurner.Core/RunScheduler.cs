@@ -35,7 +35,7 @@ public sealed class RunScheduler
     }
 
     /// <summary>首次或重新启用均须显式调用，立即开始首轮；0% 不启动计划或请求。</summary>
-    public bool Enable(ScheduleConfiguration configuration)
+    public bool Enable(ScheduleConfiguration configuration, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         configuration.Validate();
@@ -52,7 +52,7 @@ public sealed class RunScheduler
                 return false;
             }
             // 先做引擎预检，再公开启用；入口失败不留下半启动计划。
-            _activeRun = _engine.RunAsync(configuration.Run);
+            _activeRun = _engine.RunAsync(configuration.Run, cancellationToken);
             var session = new Session(now, _time.GetTimestamp());
             _session = session;
             _snapshot = new(ScheduleState.Enabled, configuration, now, next, 1, 0, null, null);

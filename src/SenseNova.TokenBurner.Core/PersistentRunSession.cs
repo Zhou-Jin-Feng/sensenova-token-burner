@@ -77,6 +77,23 @@ public sealed class PersistentRunSession
         return await run.ConfigureAwait(false);
     }
 
+    /// <summary>显式归档本轮并清零客户端进度；不删除历史、不请求服务端、不启用计划。</summary>
+    public async Task ResetProgressAsync(bool reviewCompleted = false, CancellationToken cancellationToken = default)
+    {
+        await _controls.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureInactive();
+            if (Recovery.State is RecoveryState.AwaitingConfirmation or RecoveryState.NeedsReview)
+                await _journal.ConfirmAsync(reviewCompleted, cancellationToken).ConfigureAwait(false);
+            if (Recovery.Document?.CurrentRun?.ReviewedUtc is not null) _engine.AcknowledgeReview();
+            _engine.EnsureCanReset();
+            await _journal.ResetProgressAsync(cancellationToken).ConfigureAwait(false);
+            _engine.ResetProgress(); // 只有归档成功才能清内存，写失败仍保留原进度。
+        }
+        finally { _controls.Release(); }
+    }
+
     public async Task<bool> EnableScheduleAsync(ScheduleConfiguration configuration, CancellationToken cancellationToken = default)
     {
         await _controls.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -84,7 +101,8 @@ public sealed class PersistentRunSession
         {
             EnsureInactive();
             await SavePlanAsync(configuration, configuration.Run.TargetTokens > 0, cancellationToken).ConfigureAwait(false);
-            return _scheduler.Enable(configuration);
+            cancellationToken.ThrowIfCancellationRequested();
+            return _scheduler.Enable(configuration, cancellationToken);
         }
         finally { _controls.Release(); }
     }
