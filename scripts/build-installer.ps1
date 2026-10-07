@@ -41,7 +41,7 @@ try {
     $lockedRestore = @($releaseLocks | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -eq 0
     & $dotnet publish 'src/SenseNova.TokenBurner.Desktop/SenseNova.TokenBurner.Desktop.csproj' `
         --configuration Release --runtime win-x64 --self-contained true --output $publishDirectory `
-        -p:RuntimeFrameworkVersion=10.0.12 -p:NuGetLockFilePath=packages.win-x64.lock.json "-p:RestoreLockedMode=$lockedRestore" `
+        -p:RuntimeFrameworkVersion=10.0.12 -p:NuGetLockFilePath=packages.win-x64.lock.json "-p:RestoreLockedMode=$lockedRestore" -p:NuGetAudit=false `
         -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugSymbols=false -p:DebugType=None `
         "-p:Version=$Version" "-p:FileVersion=$numericVersion" *> (Join-Path $buildRoot 'publish.log')
     if ($LASTEXITCODE -ne 0) { throw "自包含发布失败，见 $buildRoot/publish.log。" }
