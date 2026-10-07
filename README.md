@@ -67,3 +67,7 @@
 `dev.ps1 run` 始终使用进程内 HTTP mock：只接受虚拟 key（如 `mock-only-not-a-real-key-1`），不联网、不监听端口，数据在 `.local/mock-profile`。普通启动使用真实 HTTP，但添加、保存、重开都不会发请求；只有显式运行或启用定时才会校验模型并发送消耗请求。
 
 用户数据在 `%LOCALAPPDATA%\SenseNova.TokenBurner\User`。仓库不得包含真实凭据、私人配置或运行记录，`agent/` 和 `.local/` 已忽略。结构、规则和测试说明见[基础架构与开发](docs/基础架构与开发.md)。
+
+## 许可证
+
+本项目以 [MIT 许可证](LICENSE) 发布。安装包随附的 .NET 运行时等第三方组件许可，见程序目录下的 `ThirdPartyNotices`。

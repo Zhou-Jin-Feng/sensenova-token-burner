@@ -6,7 +6,7 @@
 
 - `SenseNova.TokenBurner-<版本>-win-x64-setup.exe`：安装程序
 - `SHA256SUMS.txt`：安装程序的 SHA-256
-- `首次使用.md`：使用说明（安装后程序目录里也有一份）
+- `FIRST_USE.md`：首次使用说明（安装后程序目录里有同样内容的 `首次使用.md`）
 
 安装程序未签名。下载后建议在 PowerShell 里核对哈希，与 `SHA256SUMS.txt` 一致再运行：
 
