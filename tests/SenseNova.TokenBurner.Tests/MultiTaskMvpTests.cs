@@ -974,4 +974,65 @@ public sealed class MultiTaskMvpTests
         public TestCenterDialog() : base("测试对话框", 540) { }
         public void TestFit() => FitToContent();
     }
+
+    [TestMethod]
+    public async Task WeeklyQuotaSettingsSyncsAcrossSameQuotaGroupAndPersists()
+    {
+        using var folder = new TestFolder(); var api = new FakeMultiApi();
+        await using (var coordinator = Coordinator(folder, api))
+        {
+            await coordinator.InitializeAsync();
+            var a = await coordinator.AddAsync(Key1, Config("key-1") with { QuotaGroup = "test-group" });
+            var b = await coordinator.AddAsync(Key2, Config("key-2") with { QuotaGroup = "test-group" });
+            await coordinator.UpdateWeeklyQuotaSettingsAsync(a.Configuration.Id, DayOfWeek.Wednesday, TimeSpan.FromHours(14), 500_000, true, 20_000);
+            Assert.AreEqual(DayOfWeek.Wednesday, a.Configuration.WeeklyResetDay);
+            Assert.AreEqual(TimeSpan.FromHours(14), a.Configuration.WeeklyResetTime);
+            Assert.AreEqual(500_000L, a.Configuration.WeeklyQuotaPoints);
+            Assert.AreEqual(20_000L, a.Configuration.WeeklyQuotaManualAdjustment);
+            Assert.AreEqual(DayOfWeek.Wednesday, b.Configuration.WeeklyResetDay);
+            Assert.AreEqual(TimeSpan.FromHours(14), b.Configuration.WeeklyResetTime);
+            Assert.AreEqual(500_000L, b.Configuration.WeeklyQuotaPoints);
+            Assert.AreEqual(20_000L, b.Configuration.WeeklyQuotaManualAdjustment);
+        }
+
+        await using (var reopened = Coordinator(folder, api))
+        {
+            await reopened.InitializeAsync();
+            Assert.AreEqual(2, reopened.Tasks.Count);
+            Assert.AreEqual(DayOfWeek.Wednesday, reopened.Tasks[0].Configuration.WeeklyResetDay);
+            Assert.AreEqual(TimeSpan.FromHours(14), reopened.Tasks[0].Configuration.WeeklyResetTime);
+            Assert.AreEqual(500_000L, reopened.Tasks[0].Configuration.WeeklyQuotaPoints);
+            Assert.AreEqual(DayOfWeek.Wednesday, reopened.Tasks[1].Configuration.WeeklyResetDay);
+        }
+    }
+
+    [TestMethod]
+    public async Task WeeklyQuotaExceededPreventsScheduleStartAndWarnsInRunPreview()
+    {
+        using var folder = new TestFolder(); var api = new FakeMultiApi();
+        await using var coordinator = Coordinator(folder, api);
+        await coordinator.InitializeAsync();
+        var row = await coordinator.AddAsync(Key1, Config("key-1", 100));
+        // 将配额设为 10,000 分，手动调整 10,000 分 -> 立即达到并超出配额
+        await coordinator.UpdateWeeklyQuotaSettingsAsync(row.Configuration.Id, DayOfWeek.Monday, TimeSpan.Zero, 10_000, true, 10_000);
+        var status = coordinator.GetWeeklyQuotaStatus(row);
+        Assert.IsTrue(status.IsQuotaExceeded);
+        Assert.IsTrue(coordinator.IsWeeklyQuotaPaused(row));
+
+        var preview = coordinator.PreviewRun(row.Configuration.Id);
+        Assert.IsTrue(preview.Risks.Any(r => r.Contains("超额警告")));
+        Assert.IsTrue(preview.Facts.Any(f => f.Key == "本周专属积分"));
+
+        // 启用计划应成功开启，但首轮不发送请求（StartedRuns = 0）
+        await coordinator.StartAsync(row.Configuration.Id, schedule: true);
+        Assert.AreEqual(ScheduleState.Enabled, row.Session.Schedule.State);
+        Assert.AreEqual(0L, row.Session.Schedule.StartedRuns);
+        Assert.AreEqual(0, api.CompletionCalls, "超额跳过时不得发出任何生成请求。");
+        Assert.AreEqual(1, api.TotalCalls, "仅有准备阶段的单次 GET /models。");
+        Assert.AreEqual("周额度已满，等待刷新", row.Status);
+        Assert.AreEqual("超额等待", row.ShortStatus);
+        Assert.AreEqual(TaskStatusKind.Warning, row.StatusKind);
+        await coordinator.DisablePlanAsync(row.Configuration.Id);
+    }
+
 }

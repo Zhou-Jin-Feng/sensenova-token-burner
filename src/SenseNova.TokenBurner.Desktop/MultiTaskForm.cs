@@ -143,8 +143,10 @@ public sealed class MultiTaskForm : Form
         _detail.Target.DirtyChanged += () => UpdateView();
         Bind(_detail.Schedule.Enable, EnablePlanAsync, allowConcurrent: true);
         Bind(_detail.Schedule.Disable, DisablePlanAsync);
+        Bind(_detail.Schedule.SaveWeeklySettings, SaveWeeklySettingsAsync);
         _detail.Schedule.Interval.ValueChanged += (_, _) => UpdateView();
         _detail.Schedule.Interval.Edited += (_, _) => UpdateView();
+        _detail.Schedule.WeeklyDirtyChanged += () => UpdateView();
         _detail.PageShown += _ => UpdateView();
         _status.ActivityButton.Click += (_, _) => ShowActivity();
 
@@ -385,6 +387,9 @@ public sealed class MultiTaskForm : Form
             new("已完成请求", $"{run.CompletedRequests} 笔"),
             new("未知用量", $"{run.UnknownUsageRequests} 笔", null, run.UnknownUsageRequests > 0 ? TaskStatusKind.Warning : null)
         ]);
+        var weekly = _coordinator.GetWeeklyQuotaStatus(row, now);
+        _detail.Overview.WeeklyQuota.SetData(weekly, now);
+
         var overview = _detail.Overview;
         var needsReview = row.Session.Recovery.State == RecoveryState.NeedsReview;
         overview.Review.Visible = needsReview;
@@ -408,6 +413,7 @@ public sealed class MultiTaskForm : Form
 
         // 定时
         var schedule = _detail.Schedule;
+        if (!schedule.IsWeeklyDirty) schedule.LoadWeekly(configuration, weekly, now);
         schedule.State.Level = scheduleOn ? NoticeLevel.Success : configuration.PlanRequested ? NoticeLevel.Warning : NoticeLevel.Info;
         schedule.State.Title = scheduleOn ? "定时已启用" : configuration.PlanRequested ? "定时需要重新启用" : "定时未启用";
         schedule.State.Text = scheduleOn
@@ -545,23 +551,69 @@ public sealed class MultiTaskForm : Form
         {
             _detail.Target.Load(row.Configuration);
             _detail.Schedule.Interval.Value = Math.Clamp(row.Configuration.IntervalHours, _detail.Schedule.Interval.Minimum, _detail.Schedule.Interval.Maximum);
+            _detail.Schedule.LoadWeekly(row.Configuration, _coordinator.GetWeeklyQuotaStatus(row, DateTimeOffset.UtcNow), DateTimeOffset.UtcNow);
         }
         if (!refresh) return;
         UpdateView();
         _roster.List.EnsureVisible(id);
     }
 
-    /// <summary>目标设置有未保存修改时，先让用户选择保存、放弃或取消；取消返回 false。</summary>
+    /// <summary>目标设置或周额度设置有未保存修改时，先让用户选择保存、放弃或取消；取消返回 false。</summary>
     private async Task<bool> ResolveDirtyAsync()
     {
         var page = _detail.Target;
-        if (!page.IsDirty || SelectedRow is not { } row) return true;
-        switch (Prompts.ResolveDirty(this, row.Configuration.DisplayName))
+        if (page.IsDirty && SelectedRow is { } row)
         {
-            case DirtyChoice.Save: return await SaveSettingsCoreAsync(row);
-            case DirtyChoice.Discard: page.Load(row.Configuration); return true;
-            default: SetNotice("已取消，未保存的修改仍保留在目标设置页。", NoticeLevel.Info); return false;
+            switch (Prompts.ResolveDirty(this, row.Configuration.DisplayName))
+            {
+                case DirtyChoice.Save: if (!await SaveSettingsCoreAsync(row)) return false; break;
+                case DirtyChoice.Discard: page.Load(row.Configuration); break;
+                default: SetNotice("已取消，未保存的修改仍保留在目标设置页。", NoticeLevel.Info); return false;
+            }
         }
+        var schedule = _detail.Schedule;
+        if (schedule.IsWeeklyDirty && SelectedRow is { } sRow)
+        {
+            switch (Prompts.ResolveDirty(this, sRow.Configuration.DisplayName + "的周额度设置"))
+            {
+                case DirtyChoice.Save: await SaveWeeklySettingsAsync(); break;
+                case DirtyChoice.Discard: schedule.LoadWeekly(sRow.Configuration, _coordinator.GetWeeklyQuotaStatus(sRow, DateTimeOffset.UtcNow), DateTimeOffset.UtcNow); break;
+                default: SetNotice("已取消，未保存的修改仍保留在定时页。", NoticeLevel.Info); return false;
+            }
+        }
+        return true;
+    }
+
+    private async Task SaveWeeklySettingsAsync()
+    {
+        var row = RequireSelected();
+        var schedule = _detail.Schedule;
+        var day = schedule.WeeklyResetDay.SelectedIndex switch
+        {
+            0 => DayOfWeek.Monday,
+            1 => DayOfWeek.Tuesday,
+            2 => DayOfWeek.Wednesday,
+            3 => DayOfWeek.Thursday,
+            4 => DayOfWeek.Friday,
+            5 => DayOfWeek.Saturday,
+            _ => DayOfWeek.Sunday
+        };
+        var time = TimeSpan.FromHours((double)schedule.WeeklyResetHour.Value);
+        var quotaPoints = (long)schedule.WeeklyQuotaLimit.Value;
+        var autoStop = schedule.WeeklyAutoStop.Checked;
+        var adjustment = (long)schedule.WeeklyManualAdjustment.Value;
+
+        try
+        {
+            await _coordinator.UpdateWeeklyQuotaSettingsAsync(row.Configuration.Id, day, time, quotaPoints, autoStop, adjustment);
+            var group = string.IsNullOrEmpty(row.Configuration.QuotaGroup) ? "" : $"（额度组“{row.Configuration.QuotaGroup}”）";
+            SetNotice($"{row.Configuration.DisplayName}：周额度设置已保存{group}。", NoticeLevel.Success, row.Configuration.Id);
+        }
+        catch (Exception exception) when (exception is ArgumentException or LocalStorageException)
+        {
+            SetNotice($"周额度设置保存失败：{exception.Message}", NoticeLevel.Warning, row.Configuration.Id);
+        }
+        UpdateView();
     }
 
     private async Task<bool> SaveSettingsCoreAsync(TaskRuntime row)

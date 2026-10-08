@@ -196,10 +196,15 @@ internal sealed class ConfirmDialog : DialogForm
         AcceptButton = null;
     }
 
-    public static ConfirmSpec ForRun(RunPreview preview) => new("确认运行", preview.Title,
-        "开始前请确认目标和单笔请求规模。确认后才会联网发送请求。", preview.Facts, "每笔请求", preview.RequestFacts,
-        preview.Risks.Select((risk, index) => (index == 0 && risk.Contains("超过", StringComparison.Ordinal) ? NoticeLevel.Warning : NoticeLevel.Info, risk)).ToList(),
-        "确认运行", false);
+    public static ConfirmSpec ForRun(RunPreview preview)
+    {
+        var hasExceededWarning = preview.Risks.Any(r => r.Contains("超额警告", StringComparison.Ordinal));
+        return new("确认运行", preview.Title,
+            "开始前请确认目标和单笔请求规模。确认后才会联网发送请求。", preview.Facts, "每笔请求", preview.RequestFacts,
+            preview.Risks.Select(risk => (risk.Contains("超过", StringComparison.Ordinal) || risk.Contains("超额", StringComparison.Ordinal) || risk.Contains("警告", StringComparison.Ordinal) ? NoticeLevel.Warning : NoticeLevel.Info, risk)).ToList(),
+            hasExceededWarning ? "超额并继续运行" : "确认运行",
+            hasExceededWarning);
+    }
 }
 
 internal enum DirtyChoice { Save, Discard, Cancel }

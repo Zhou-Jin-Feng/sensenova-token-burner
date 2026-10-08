@@ -22,6 +22,9 @@ public sealed class RunScheduler
         _time = timeProvider ?? TimeProvider.System;
     }
 
+    /// <summary>由外部协调器注入的运行准入检查（如周额度超额拦截）；返回 false 时跳过本轮。</summary>
+    public Func<bool>? CanStartSchedule { get; set; }
+
     public ScheduleSnapshot Snapshot
     {
         get
@@ -51,10 +54,16 @@ public sealed class RunScheduler
                 _snapshot = new(ScheduleState.Disabled, configuration, null, null, 0, 0, null, null);
                 return false;
             }
-            // 先做引擎预检，再公开启用；入口失败不留下半启动计划。
-            _activeRun = _engine.RunAsync(configuration.Run, cancellationToken);
             var session = new Session(now, _time.GetTimestamp());
             _session = session;
+            if (CanStartSchedule?.Invoke() == false)
+            {
+                _snapshot = new(ScheduleState.Enabled, configuration, now, next, 0, 0, null, null);
+                _loop = Task.Run(() => ExecuteScheduleAsync(session));
+                return true;
+            }
+            // 先做引擎预检，再公开启用；入口失败不留下半启动计划。
+            _activeRun = _engine.RunAsync(configuration.Run, cancellationToken);
             _snapshot = new(ScheduleState.Enabled, configuration, now, next, 1, 0, null, null);
             _loop = Task.Run(() => ExecuteScheduleAsync(session));
             return true;
@@ -153,7 +162,7 @@ public sealed class RunScheduler
                         var passed = (now.UtcTicks - next.UtcTicks) / interval.Ticks + 1;
                         var last = next.AddTicks((passed - 1) * interval.Ticks);
                         session.HighWatermarkUtc = Later(session.HighWatermarkUtc, last);
-                        canStart = onTime && passed == 1 && _activeRun is null;
+                        canStart = onTime && passed == 1 && _activeRun is null && (CanStartSchedule?.Invoke() ?? true);
                         _snapshot = _snapshot with { SkippedCycles = checked(_snapshot.SkippedCycles + passed - (canStart ? 1 : 0)) };
                     }
                     try

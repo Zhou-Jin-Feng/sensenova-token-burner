@@ -95,6 +95,72 @@ internal sealed class BurnChart : UiControl, IHeightForWidth
     }
 }
 
+/// <summary>周专属积分额度卡片：展示本周已消耗分/上限、对应 tokens、进度条与刷新倒计时。</summary>
+internal sealed class WeeklyQuotaCard : UiControl, IHeightForWidth
+{
+    private string _group = "";
+    private long _consumedPoints;
+    private long _quotaPoints = ConsumptionPolicy.DefaultWeeklyQuotaPoints;
+    private long _consumedTokens;
+    private long _quotaTokens = ConsumptionPolicy.PointsToTokens(ConsumptionPolicy.DefaultWeeklyQuotaPoints);
+    private string _resetCountdown = "";
+    private bool _isExceeded;
+
+    public void SetData(WeeklyQuotaStatus status, DateTimeOffset nowUtc)
+    {
+        _group = string.IsNullOrEmpty(status.QuotaGroup) ? "独立任务" : $"额度组: {status.QuotaGroup}";
+        _consumedPoints = status.ConsumedPoints;
+        _quotaPoints = status.QuotaPoints;
+        _consumedTokens = status.ConsumedTokens;
+        _quotaTokens = status.QuotaTokens;
+        _resetCountdown = status.FormatResetCountdown(nowUtc);
+        _isExceeded = status.IsQuotaExceeded;
+        Invalidate();
+    }
+
+    public int HeightForWidth(int width) => S(70);
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(BackColor);
+        Draw.Smooth(g);
+
+        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+        Draw.Fill(g, rect, S(6), P.SurfaceAlt);
+        Draw.Stroke(g, rect, S(6), P.Line);
+
+        var left = S(12);
+        var top = S(8);
+        Draw.Text(g, $"本周专属额度 ({_group})", F.BodyBold, new Rectangle(left, top, S(220), S(18)), P.Ink);
+
+        var countdownText = $"刷新倒计时: {_resetCountdown}";
+        Draw.Text(g, countdownText, F.Caption, new Rectangle(Width / 2, top, Width / 2 - S(12), S(18)), P.Subtle, Draw.Single | TextFormatFlags.Right);
+
+        var ratio = _quotaPoints <= 0 ? 0 : Math.Clamp((double)_consumedPoints / _quotaPoints, 0, 1);
+        var percent = ratio * 100;
+        var statusColor = _isExceeded ? P.Danger : ratio > 0.85 ? P.Warn : P.Primary;
+
+        var pointsText = $"{_consumedPoints:N0} / {_quotaPoints:N0} 分 ({percent:0.#}%)";
+        var tokenText = $"{Format.Compact(_consumedTokens)} / {Format.Compact(_quotaTokens)} tokens";
+        Draw.Text(g, pointsText, F.NumberMedium, new Rectangle(left, top + S(22), S(260), S(20)), statusColor);
+        Draw.Text(g, tokenText, F.Caption, new Rectangle(Width / 2, top + S(24), Width / 2 - S(12), S(18)), P.Muted, Draw.Single | TextFormatFlags.Right);
+
+        var barY = top + S(46);
+        var barWidth = Width - S(24);
+        var barHeight = S(6);
+        var trackRect = new Rectangle(left, barY, barWidth, barHeight);
+        Draw.Fill(g, trackRect, barHeight / 2, P.Line);
+
+        if (ratio > 0)
+        {
+            var fillWidth = Math.Max(barHeight, (int)(barWidth * ratio));
+            var fillRect = new Rectangle(left, barY, fillWidth, barHeight);
+            Draw.Fill(g, fillRect, barHeight / 2, statusColor);
+        }
+    }
+}
+
 /// <summary>概览页：仪表 + 读数 + 速率图 + 需要处理的提示。</summary>
 internal sealed class OverviewPage : UiControl, IHeightForWidth
 {
@@ -105,10 +171,11 @@ internal sealed class OverviewPage : UiControl, IHeightForWidth
         Review.Content = ReviewConfirm;
         Message.Level = NoticeLevel.Info;
         Note.Level = NoticeLevel.Info;
-        Controls.AddRange([Gauge, Readouts, Chart, Review, Message, Note]);
+        Controls.AddRange([Gauge, Readouts, WeeklyQuota, Chart, Review, Message, Note]);
     }
     public UiGauge Gauge { get; } = new();
     public ReadoutGrid Readouts { get; } = new();
+    public WeeklyQuotaCard WeeklyQuota { get; } = new();
     public BurnChart Chart { get; } = new();
     public UiCallout Review { get; } = new();
     public UiToggle ReviewConfirm { get; } = new("我已核查官方用量和剩余额度，接受未知记录", ToggleStyle.Check, "ReviewConfirm");
@@ -143,6 +210,9 @@ internal sealed class OverviewPage : UiControl, IHeightForWidth
             if (apply) Readouts.SetBounds(0, y, width, readoutsHeight);
             y += readoutsHeight + S(16);
         }
+        var weeklyHeight = WeeklyQuota.HeightForWidth(width);
+        if (apply) WeeklyQuota.SetBounds(0, y, width, weeklyHeight);
+        y += weeklyHeight + S(16);
         foreach (var callout in new[] { Review, Message, Note })
         {
             if (!callout.Visible) continue;
@@ -402,6 +472,12 @@ internal sealed class TargetPage : UiControl, IHeightForWidth
 internal sealed class SchedulePage : UiControl, IHeightForWidth
 {
     private Rectangle _intervalLabel;
+    private Rectangle _weeklyLabel;
+    private Rectangle _resetDayLabel;
+    private Rectangle _limitLabel;
+    private Rectangle _adjLabel;
+    private bool _loading;
+
     public SchedulePage()
     {
         Interval = new UiNumber(0.01m, 8760, 5, 2, 0.5m, "小时", "运行间隔小时") { Name = "IntervalHours" };
@@ -410,16 +486,95 @@ internal sealed class SchedulePage : UiControl, IHeightForWidth
         Notes = new TextBlock(() => Theme.Fonts.Caption, () => Theme.Current.Muted,
             "启用后会立即开始第一轮，之后每隔设定时间自动开始新一轮；关闭应用后定时不会继续，重开需要再次启用。\n"
             + "这只是本地计划间隔，不代表官方额度的刷新时间（官方额度按滚动窗口计算）。暂停或重置任务也会关闭定时。");
-        Controls.AddRange([State, Interval, Enable, Disable, Notes]);
+
+        WeeklyCallout.Level = NoticeLevel.Info;
+        WeeklyAutoStop = new UiToggle("达到周额度时自动跳过定时，下周刷新后恢复", ToggleStyle.Check, "WeeklyAutoStop") { Checked = true };
+        WeeklyResetDay = new UiSegmented(SegmentedStyle.Pills, "周一", "周二", "周三", "周四", "周五", "周六", "周日") { Name = "WeeklyResetDay" };
+        WeeklyResetHour = new UiNumber(0, 23, 0, 0, 1, "点", "刷新时间（小时）") { Name = "WeeklyResetHour" };
+        WeeklyQuotaLimit = new UiNumber(10_000, 10_000_000, ConsumptionPolicy.DefaultWeeklyQuotaPoints, 0, 10_000, "分", "周专属积分上限") { Name = "WeeklyQuotaPoints" };
+        WeeklyManualAdjustment = new UiNumber(-10_000_000, 10_000_000, 0, 0, 10_000, "分", "本周手动积分修正") { Name = "WeeklyManualAdjustment" };
+        SaveWeeklySettings = new UiButton("保存周额度设置", ButtonKind.Primary, Glyphs.Check, "SaveWeeklySettings");
+        SaveWeeklySettings.Enabled = false;
+
+        WeeklyAutoStop.CheckedChanged += (_, _) => OnWeeklyDirty();
+        WeeklyResetDay.SelectedIndexChanged += (_, _) => OnWeeklyDirty();
+        WeeklyResetHour.ValueChanged += (_, _) => OnWeeklyDirty();
+        WeeklyQuotaLimit.ValueChanged += (_, _) => OnWeeklyDirty();
+        WeeklyManualAdjustment.ValueChanged += (_, _) => OnWeeklyDirty();
+
+        Controls.AddRange([State, Interval, Enable, Disable, Notes, WeeklyCallout, WeeklyAutoStop, WeeklyResetDay, WeeklyResetHour, WeeklyQuotaLimit, WeeklyManualAdjustment, SaveWeeklySettings]);
     }
+
     public UiCallout State { get; } = new();
     public UiNumber Interval { get; }
     public UiButton Enable { get; }
     public UiButton Disable { get; }
     public TextBlock Notes { get; }
 
+    public UiCallout WeeklyCallout { get; } = new();
+    public UiToggle WeeklyAutoStop { get; }
+    public UiSegmented WeeklyResetDay { get; }
+    public UiNumber WeeklyResetHour { get; }
+    public UiNumber WeeklyQuotaLimit { get; }
+    public UiNumber WeeklyManualAdjustment { get; }
+    public UiButton SaveWeeklySettings { get; }
+
+    public bool IsWeeklyDirty { get; private set; }
+    public event Action? WeeklyDirtyChanged;
+
+    private void OnWeeklyDirty()
+    {
+        if (_loading) return;
+        IsWeeklyDirty = true;
+        SaveWeeklySettings.Enabled = true;
+        WeeklyDirtyChanged?.Invoke();
+    }
+
+    public void LoadWeekly(TaskConfiguration config, WeeklyQuotaStatus weekly, DateTimeOffset nowUtc)
+    {
+        _loading = true;
+        try
+        {
+            WeeklyAutoStop.Checked = config.WeeklyQuotaAutoStop;
+            WeeklyResetDay.SetSelectedSilently(config.WeeklyResetDay switch
+            {
+                DayOfWeek.Monday => 0,
+                DayOfWeek.Tuesday => 1,
+                DayOfWeek.Wednesday => 2,
+                DayOfWeek.Thursday => 3,
+                DayOfWeek.Friday => 4,
+                DayOfWeek.Saturday => 5,
+                _ => 6
+            });
+            WeeklyResetHour.Value = Math.Clamp((decimal)config.WeeklyResetTime.TotalHours, 0, 23);
+            WeeklyQuotaLimit.Value = Math.Clamp(config.WeeklyQuotaPoints, 10_000, 10_000_000);
+            WeeklyManualAdjustment.Value = Math.Clamp(config.WeeklyQuotaManualAdjustment, -10_000_000, 10_000_000);
+            IsWeeklyDirty = false;
+            SaveWeeklySettings.Enabled = false;
+
+            var countdown = weekly.FormatResetCountdown(nowUtc);
+            var groupText = string.IsNullOrEmpty(weekly.QuotaGroup) ? "当前任务独立统计" : $"额度组“{weekly.QuotaGroup}”共享统计";
+            if (weekly.IsQuotaExceeded)
+            {
+                WeeklyCallout.Level = NoticeLevel.Warning;
+                WeeklyCallout.Text = $"【周额度已超额】本周已累计消耗 {weekly.ConsumedPoints:N0} / {weekly.QuotaPoints:N0} 积分（{groupText}）。\n"
+                    + (weekly.AutoStopEnabled
+                        ? $"已开启自动跳过：定时轮次已自动暂停，将在 {weekly.NextResetUtc.ToLocalTime():yyyy-MM-dd HH:mm}（{countdown}）刷新后自动恢复。"
+                        : "自动跳过未开启：定时仍会继续触发，请注意官方扣减风险。");
+            }
+            else
+            {
+                WeeklyCallout.Level = NoticeLevel.Info;
+                WeeklyCallout.Text = $"本周已消耗 {weekly.ConsumedPoints:N0} / {weekly.QuotaPoints:N0} 积分（剩余 {weekly.RemainingPoints:N0} 分，{groupText}）。\n"
+                    + $"下周刷新时间：{weekly.NextResetUtc.ToLocalTime():yyyy-MM-dd HH:mm}（{countdown}）。达到上限后将自动跳过定时。";
+            }
+        }
+        finally { _loading = false; }
+    }
+
     public int HeightForWidth(int width) => Arrange(width, false);
     protected override void OnLayout(LayoutEventArgs levent) { base.OnLayout(levent); Arrange(Width, true); }
+
     private int Arrange(int width, bool apply)
     {
         var y = S(4);
@@ -453,12 +608,67 @@ internal sealed class SchedulePage : UiControl, IHeightForWidth
         }
         var notes = Notes.HeightForWidth(width);
         if (apply) Notes.SetBounds(0, y, width, notes);
-        return y + notes + S(12);
+        y += notes + S(22);
+
+        // 周额度与自动停止分区
+        if (apply) _weeklyLabel = new Rectangle(0, y, width, S(24));
+        y += S(28);
+
+        var calloutHeight = WeeklyCallout.HeightForWidth(width);
+        if (apply) WeeklyCallout.SetBounds(0, y, width, calloutHeight);
+        y += calloutHeight + S(14);
+
+        if (apply) WeeklyAutoStop.SetBounds(0, y, width, S(26));
+        y += S(32);
+
+        if (apply) _resetDayLabel = new Rectangle(0, y, width, S(20));
+        y += S(22);
+
+        var dayWidth = Math.Min(width, S(380));
+        if (apply) WeeklyResetDay.SetBounds(0, y, dayWidth, S(32));
+        var hourWidth = Math.Min(width - dayWidth - S(12), S(140));
+        if (width >= dayWidth + S(150))
+        {
+            if (apply) WeeklyResetHour.SetBounds(dayWidth + S(12), y, Math.Max(S(120), hourWidth), WeeklyResetHour.PreferredHeight);
+            y += Math.Max(S(32), WeeklyResetHour.PreferredHeight) + S(14);
+        }
+        else
+        {
+            y += S(36);
+            if (apply) WeeklyResetHour.SetBounds(0, y, S(160), WeeklyResetHour.PreferredHeight);
+            y += WeeklyResetHour.PreferredHeight + S(14);
+        }
+
+        var colWidth = (width - S(14)) / 2;
+        if (apply)
+        {
+            _limitLabel = new Rectangle(0, y, colWidth, S(20));
+            _adjLabel = new Rectangle(colWidth + S(14), y, colWidth, S(20));
+        }
+        y += S(22);
+
+        if (apply)
+        {
+            WeeklyQuotaLimit.SetBounds(0, y, colWidth, WeeklyQuotaLimit.PreferredHeight);
+            WeeklyManualAdjustment.SetBounds(colWidth + S(14), y, colWidth, WeeklyManualAdjustment.PreferredHeight);
+        }
+        y += WeeklyQuotaLimit.PreferredHeight + S(18);
+
+        var saveSize = SaveWeeklySettings.GetPreferredSize(Size.Empty);
+        if (apply) SaveWeeklySettings.SetBounds(0, y, Math.Max(saveSize.Width, S(150)), saveSize.Height);
+        y += saveSize.Height + S(12);
+
+        return y;
     }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.Clear(BackColor);
         Draw.Text(e.Graphics, "运行间隔", F.Caption, _intervalLabel, P.Muted);
+        Draw.Text(e.Graphics, "周额度与自动停止", F.Section, _weeklyLabel, P.Ink);
+        Draw.Text(e.Graphics, "每周刷新日与时间点", F.Caption, _resetDayLabel, P.Muted);
+        Draw.Text(e.Graphics, "周专属积分上限", F.Caption, _limitLabel, P.Muted);
+        Draw.Text(e.Graphics, "本周手动修正（选填）", F.Caption, _adjLabel, P.Muted);
     }
 }
 

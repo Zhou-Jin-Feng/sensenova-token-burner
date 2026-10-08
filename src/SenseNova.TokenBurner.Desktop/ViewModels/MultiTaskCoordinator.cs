@@ -30,6 +30,7 @@ public sealed class TaskRuntime
     internal string? KeyIdentity { get; set; }
     internal Guid? NotifiedRecord { get; set; }
     internal DateTimeOffset? SavedNextUtc { get; set; }
+    internal Func<TaskRuntime, bool>? IsWeeklyQuotaPaused { get; set; }
     /// <summary>任务最近一条结果说明；赋值时级别默认按“需要注意”处理，成功/取消/错误处另行标注。</summary>
     public string Message { get; internal set { field = value; MessageLevel = NoticeLevel.Warning; } } = "";
     public NoticeLevel MessageLevel { get; internal set; } = NoticeLevel.Warning;
@@ -60,7 +61,8 @@ public sealed class TaskRuntime
                 RunState.Completed => ("已完成", "已完成", TaskStatusKind.Success),
                 RunState.Stopped => ("已停止", "已停止", TaskStatusKind.Idle),
                 RunState.Faulted => ("异常停止", "异常停止", TaskStatusKind.Danger),
-                _ => Session.Schedule.State == ScheduleState.Enabled ? ("等待计划", "等待定时", TaskStatusKind.Info)
+                _ => Session.Schedule.State == ScheduleState.Enabled
+                    ? (IsWeeklyQuotaPaused?.Invoke(this) == true ? ("周额度已满，等待刷新", "超额等待", TaskStatusKind.Warning) : ("等待计划", "等待定时", TaskStatusKind.Info))
                     : ("尚未运行", "未运行", TaskStatusKind.Idle)
             }
         };
@@ -179,6 +181,8 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
         var slot = new ExecutorSlot();
         var session = new PersistentRunSession(slot, _workspace.Storage.RunState(task), timeProvider: _time, limiter: Limiter);
         var runtime = new TaskRuntime(task, session, slot) { SavedNextUtc = null };
+        runtime.IsWeeklyQuotaPaused = r => IsWeeklyQuotaPaused(r);
+        session.CanStartSchedule = () => CanScheduleRun(runtime);
         await session.InitializeAsync(_lifetime.Token);
         _tasks.Add(runtime);
         return runtime;
@@ -282,19 +286,106 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
             ? "未分组（不代表独立额度）" : row.Configuration.QuotaGroup;
         var plan = schedule ? $"计划间隔：每{row.Configuration.IntervalHours:0.##}小时；以后每轮都会重新发送生成请求。"
             : "计划状态：此操作不启用周期计划。";
+        var weekly = GetWeeklyQuotaStatus(row);
+        var weeklyText = $"{weekly.ConsumedPoints:N0} / {weekly.QuotaPoints:N0} 积分 ({weekly.ConsumedTokens:N0} tokens)";
         var facts = new List<KeyValuePair<string, string>>
         {
             new("任务", row.Configuration.DisplayName), new("操作", action), new("额度组", group),
             new("本轮目标", $"{target:N0} tokens"), new("已确认", $"{confirmed:N0} tokens"), new("剩余", $"{remaining:N0} tokens"),
+            new("本周专属积分", weeklyText),
             new("定时", schedule ? $"每 {row.Configuration.IntervalHours:0.##} 小时自动开始新一轮" : "不启用")
         };
+        var notes = new List<string> { TargetRisk.Describe(target), RollingQuotaNote };
+        if (weekly.IsQuotaExceeded)
+        {
+            notes.Insert(0, $"【周额度超额警告】本周已累计消耗 {weekly.ConsumedPoints:N0} 点积分（已达上限 {weekly.QuotaPoints:N0} 点）。继续运行可能会消耗通用积分！");
+        }
+        else if (weekly.WouldExceedWith(remaining))
+        {
+            notes.Insert(0, $"【周额度超额预警】本周已消耗 {weekly.ConsumedPoints:N0} 点积分，本次运行剩余目标约需 {ConsumptionPolicy.TokensToPoints(remaining):N0} 点积分，运行后预计超出周上限 {weekly.QuotaPoints:N0} 点！");
+        }
         var text = $"任务：{row.Configuration.DisplayName}\n操作：{action}\n额度组：{group}"
             + $"\n本轮目标：{target:N0} tokens；已确认：{confirmed:N0}；剩余：{remaining:N0} tokens。"
+            + $"\n本周专属额度：{weeklyText}"
             + $"\n{plan}\n\n{RequestRiskSummary}\n\n{TargetRisk.Describe(target)}"
             + "\n额度按滚动窗口计算；请核查官方剩余额度及账户其他key/外部用量。实际usage、扣减与返赠可能不同。";
         var title = schedule ? $"启用定时：{row.Configuration.DisplayName}" : $"{action}：{row.Configuration.DisplayName}";
-        return new(title, facts, RequestFacts, [TargetRisk.Describe(target), RollingQuotaNote], text);
+        return new(title, facts, RequestFacts, notes, text);
     }
+    public bool IsWeeklyQuotaPaused(TaskRuntime row)
+    {
+        if (!row.Configuration.WeeklyQuotaAutoStop) return false;
+        var status = GetWeeklyQuotaStatus(row);
+        return status.IsQuotaExceeded || status.RemainingPoints <= 0;
+    }
+
+    private bool CanScheduleRun(TaskRuntime row)
+    {
+        return !IsWeeklyQuotaPaused(row);
+    }
+
+    public WeeklyQuotaStatus GetWeeklyQuotaStatus(TaskRuntime row, DateTimeOffset? now = null)
+    {
+        var nowUtc = now ?? (_time?.GetUtcNow() ?? DateTimeOffset.UtcNow);
+        var group = row.Configuration.QuotaGroup;
+        var tasksInGroup = string.IsNullOrEmpty(group)
+            ? [row]
+            : _tasks.Where(t => t.Configuration.QuotaGroup == group).ToArray();
+
+        var allHistory = new List<RunRecord>();
+        long activeTokens = 0;
+        DateTimeOffset? activeStarted = null;
+
+        foreach (var t in tasksInGroup)
+        {
+            if (t.Session.Recovery.Document?.History is { } history)
+            {
+                allHistory.AddRange(history);
+            }
+            if (t.Active && t.Snapshot.ConfirmedUsage is { TotalTokens: > 0 } usage)
+            {
+                activeTokens += usage.TotalTokens;
+                activeStarted = t.Session.Recovery.Document?.CurrentRun?.StartedUtc ?? nowUtc;
+            }
+        }
+
+        var activeSnapshot = activeTokens > 0
+            ? new RunSnapshot(RunState.Running, row.Snapshot.Parameters ?? new(row.Configuration.ModelId, row.Configuration.TargetTokens), new(activeTokens, 0, activeTokens), 0, 0, 0, null)
+            : null;
+
+        return WeeklyQuotaCalculator.CalculateStatus(
+            group,
+            row.Configuration,
+            allHistory,
+            activeSnapshot,
+            activeStarted,
+            nowUtc);
+    }
+
+    public async Task UpdateWeeklyQuotaSettingsAsync(Guid id, DayOfWeek resetDay, TimeSpan resetTime,
+        long quotaPoints, bool autoStop, long manualAdjustment)
+    {
+        var row = Find(id);
+        var group = row.Configuration.QuotaGroup;
+        var targetRows = string.IsNullOrEmpty(group)
+            ? [row]
+            : _tasks.Where(t => t.Configuration.QuotaGroup == group).ToArray();
+
+        foreach (var target in targetRows)
+        {
+            var updated = target.Configuration with
+            {
+                WeeklyResetDay = resetDay,
+                WeeklyResetTime = resetTime,
+                WeeklyQuotaPoints = quotaPoints,
+                WeeklyQuotaAutoStop = autoStop,
+                WeeklyQuotaManualAdjustment = manualAdjustment
+            };
+            await _workspace.SaveTaskAsync(updated, _lifetime.Token);
+            target.Configuration = updated;
+        }
+    }
+
     private const string RollingQuotaNote = "额度按滚动窗口计算，请先核查官方剩余额度和同账户其他 key 或外部用量；实际 usage、扣减与返赠可能不同。";
     private static readonly KeyValuePair<string, string>[] RequestFacts =
     [

@@ -18,6 +18,11 @@ public sealed record TaskConfiguration
     // 旧版任务继续使用原数据目录，升级不移动/覆盖既有文件。
     [JsonRequired] public bool UsesLegacyStorage { get; init; }
     [JsonRequired] public bool CredentialSaved { get; init; } = true;
+    public DayOfWeek WeeklyResetDay { get; init; } = DayOfWeek.Monday;
+    public TimeSpan WeeklyResetTime { get; init; } = TimeSpan.Zero;
+    public long WeeklyQuotaPoints { get; init; } = ConsumptionPolicy.DefaultWeeklyQuotaPoints;
+    public bool WeeklyQuotaAutoStop { get; init; } = true;
+    public long WeeklyQuotaManualAdjustment { get; init; } = 0;
     public long TargetTokens => CustomTargetTokens ?? ConsumptionPolicy.GetTargetTokens(Percentage);
 
     public void Validate()
@@ -32,6 +37,11 @@ public sealed record TaskConfiguration
         _ = new ScheduleConfiguration(new(ModelId, TargetTokens), IntervalHours).Interval;
         if (NextRunUtc is { Offset: var offset } && offset != TimeSpan.Zero)
             throw new ArgumentException("计划时间须使用UTC。");
+        if (!Enum.IsDefined(WeeklyResetDay)) throw new ArgumentException("周刷新星期无效。");
+        if (WeeklyResetTime < TimeSpan.Zero || WeeklyResetTime >= TimeSpan.FromDays(1))
+            throw new ArgumentException("周刷新时间必须在0点至24点之间。");
+        if (WeeklyQuotaPoints is <= 0 or > 100_000_000)
+            throw new ArgumentException("周额度上限须在1至1亿积分之间。");
     }
 }
 

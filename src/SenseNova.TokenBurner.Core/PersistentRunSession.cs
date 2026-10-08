@@ -21,6 +21,7 @@ public sealed class PersistentRunSession
     public RecoverySnapshot Recovery => _journal.Snapshot;
     public RunSnapshot CurrentRun => _engine.Snapshot;
     public ScheduleSnapshot Schedule => _scheduler.Snapshot;
+    public Func<bool>? CanStartSchedule { get => _scheduler.CanStartSchedule; set => _scheduler.CanStartSchedule = value; }
     public Task InitializeAsync(CancellationToken cancellationToken = default) => _journal.InitializeAsync(cancellationToken);
     public bool Pause() => _engine.Pause();
     public bool Resume() => _engine.Resume();

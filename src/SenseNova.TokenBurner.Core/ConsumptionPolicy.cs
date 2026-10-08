@@ -7,6 +7,12 @@ public static class ConsumptionPolicy
     public const int MaximumPercentage = 95;
     // 自定义目标独立于比例档位；范围仅用于数值/累计保护，不代表积分安全上限。
     public const long MaximumTargetTokens = 1_000_000_000_000;
+    /// <summary>周专属积分经验换算比例：6 万分约对应 1.2 亿 tokens，即 1 积分 = 2,000 tokens。</summary>
+    public const long TokensPerWeeklyPoint = 2_000;
+    public const long DefaultWeeklyQuotaPoints = 600_000;
+
+    public static long TokensToPoints(long tokens) => tokens / TokensPerWeeklyPoint;
+    public static long PointsToTokens(long points) => points * TokensPerWeeklyPoint;
 
     private static readonly (int Percentage, long Tokens)[] Calibration =
     [
