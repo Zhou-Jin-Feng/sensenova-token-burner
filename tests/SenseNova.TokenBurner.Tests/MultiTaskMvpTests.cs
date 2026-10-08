@@ -942,4 +942,36 @@ public sealed class MultiTaskMvpTests
             finally { lock (_gate) { _active--; _activeKeys.Remove(credential); } }
         }
     }
+
+    [TestMethod]
+    public void SettingsDialogAndDialogFormCenterToScreen()
+    {
+        var model = new SettingsModel(ThemeMode.System, 3, 3, true, @"C:\data", "1.0.0", SenseNovaDefaults.BaseUrl, SenseNovaDefaults.RebateModel, true);
+        using var settings = new SettingsDialog(model, _ => { }, (_, _) => Task.FromResult<string?>(null));
+        Assert.AreEqual(FormStartPosition.CenterScreen, settings.StartPosition);
+        var fitMethod = typeof(DialogForm).GetMethod("FitToContent", BindingFlags.Instance | BindingFlags.NonPublic);
+        fitMethod!.Invoke(settings, null);
+        var settingsScreen = Screen.FromControl(settings).WorkingArea;
+        var expectedSettingsX = Math.Max(settingsScreen.X, settingsScreen.X + (settingsScreen.Width - settings.Width) / 2);
+        var expectedSettingsY = Math.Max(settingsScreen.Y, settingsScreen.Y + (settingsScreen.Height - settings.Height) / 2);
+        Assert.AreEqual(new Point(expectedSettingsX, expectedSettingsY), settings.Location);
+
+        using var dialog = new TestCenterDialog();
+        Assert.AreEqual(FormStartPosition.CenterScreen, dialog.StartPosition);
+        dialog.TestFit();
+        var screen = Screen.FromControl(dialog).WorkingArea;
+        var expectedX = Math.Max(screen.X, screen.X + (screen.Width - dialog.Width) / 2);
+        var expectedY = Math.Max(screen.Y, screen.Y + (screen.Height - dialog.Height) / 2);
+        Assert.AreEqual(new Point(expectedX, expectedY), dialog.Location);
+
+        dialog.ShowInBackground = true;
+        dialog.TestFit();
+        Assert.AreEqual(new Point(-20000, -20000), dialog.Location);
+    }
+
+    private sealed class TestCenterDialog : DialogForm
+    {
+        public TestCenterDialog() : base("测试对话框", 540) { }
+        public void TestFit() => FitToContent();
+    }
 }

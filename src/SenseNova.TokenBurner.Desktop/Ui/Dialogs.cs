@@ -16,7 +16,7 @@ internal class DialogForm : Form
         AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false; ShowIcon = false;
-        StartPosition = FormStartPosition.CenterParent;
+        StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         Font = Theme.Fonts.Body;
         BackColor = Theme.Current.Surface;
@@ -64,6 +64,15 @@ internal class DialogForm : Form
         var height = Math.Min(bodyHeight + Theme.S(48) + footer, (int)(screen.Height * 0.86));
         ClientSize = new Size(width, height);
         PerformLayout();
+        if (ShowInBackground || (Owner is MultiTaskForm { ShowInBackground: true }))
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = new Point(-20000, -20000);
+        }
+        else
+        {
+            CenterToScreen();
+        }
     }
 
     protected override void OnLayout(LayoutEventArgs levent)
