@@ -1,3 +1,6 @@
+using SenseNova.TokenBurner.Core;
+using SenseNova.TokenBurner.Infrastructure;
+using SenseNova.TokenBurner.Infrastructure.Updates;
 using SenseNova.TokenBurner.Desktop.ViewModels;
 
 namespace SenseNova.TokenBurner.Desktop.Ui;
@@ -131,7 +134,7 @@ internal sealed class StackBody : UiControl, IHeightForWidth
         var y = 0;
         foreach (var (control, gap, maxWidth) in _items)
         {
-            if (!control.Visible && apply) continue;
+            if (!control.Visible) continue;
             var height = control is IHeightForWidth measured ? measured.HeightForWidth(width)
                 : control is UiInput input ? input.PreferredHeight
                 : control is UiNumber number ? number.PreferredHeight
@@ -285,7 +288,7 @@ internal sealed class AddKeyDialog : DialogForm
     }
 }
 
-internal sealed record SettingsModel(ThemeMode Theme, int Shared, int PerKey, bool CanChangeConcurrency, string StoragePath, string Version, string ServiceUrl, string Model, bool Mock);
+internal sealed record SettingsModel(ThemeMode Theme, int Shared, int PerKey, bool CanChangeConcurrency, string StoragePath, string Version, string ServiceUrl, string Model, bool Mock, IAppUpdateService? UpdateService = null);
 
 /// <summary>设置：外观、并发、数据位置、关于。主题即时生效；并发需保存且要求任务都已停止。</summary>
 internal sealed class SettingsDialog : DialogForm
@@ -295,6 +298,11 @@ internal sealed class SettingsDialog : DialogForm
     private readonly UiNumber _perKey;
     private readonly UiButton _saveConcurrency = new("保存并发设置", ButtonKind.Primary, null, "SaveConcurrency");
     private readonly UiCallout _concurrencyNote = new();
+    private readonly UiButton _checkUpdate = new("检查更新", ButtonKind.Secondary, Glyphs.Reset, "CheckUpdate") { Compact = true };
+    private readonly UiCallout _updateCallout = new() { Visible = false };
+    private readonly UiButton _downloadUpdate = new("下载并安装更新", ButtonKind.Primary, Glyphs.Check, "DownloadUpdate") { Compact = true, Visible = false };
+    private readonly UiButton _openReleaseBrowser = new("在浏览器中查看", ButtonKind.Secondary, null, "OpenReleaseBrowser") { Compact = true, Visible = false };
+    private AppUpdateInfo? _currentUpdate;
     private readonly SettingsModel _model;
 
     public SettingsDialog(SettingsModel model, Action<ThemeMode> applyTheme, Func<int, int, Task<string?>> saveConcurrency) : base("设置", 540)
@@ -340,7 +348,107 @@ internal sealed class SettingsDialog : DialogForm
         body.Add(Heading("关于"), 8);
         body.Add(new FactTable([
             new("版本", model.Version), new("服务地址", model.ServiceUrl), new("活动模型", model.Model),
-            new("运行环境", model.Mock ? "模拟环境，不联网、不产生真实消耗" : "SenseNova 官方 API")]), 4);
+            new("运行环境", model.Mock ? "模拟环境，不联网、不产生真实消耗" : "SenseNova 官方 API")]), 6);
+        body.Add(_checkUpdate, 6);
+        body.Add(_updateCallout, 6);
+        body.Add(_downloadUpdate, 6);
+        body.Add(_openReleaseBrowser, 10);
+
+        _checkUpdate.Click += async (_, _) =>
+        {
+            _checkUpdate.Enabled = false;
+            _checkUpdate.Text = "正在检查...";
+            _updateCallout.Visible = true;
+            _updateCallout.Level = NoticeLevel.Info;
+            _updateCallout.Title = null;
+            _updateCallout.Text = "正在连接 GitHub 检查最新版本...";
+            _downloadUpdate.Visible = false;
+            _openReleaseBrowser.Visible = false;
+            FitToContent();
+
+            try
+            {
+                var service = model.UpdateService ?? new GitHubUpdateService();
+                var update = await service.CheckForUpdateAsync(model.Version);
+                _currentUpdate = update;
+                if (!update.HasUpdate)
+                {
+                    _updateCallout.Level = NoticeLevel.Success;
+                    _updateCallout.Text = $"当前已是最新版本 (v{model.Version})。";
+                    _checkUpdate.Text = "检查更新";
+                    _checkUpdate.Enabled = true;
+                }
+                else
+                {
+                    _updateCallout.Level = NoticeLevel.Warning;
+                    _updateCallout.Title = $"发现新版本 {update.LatestVersion}（当前为 v{model.Version}）";
+                    _updateCallout.Text = string.IsNullOrWhiteSpace(update.Title) ? update.ReleaseNotes : $"{update.Title}{Environment.NewLine}{update.ReleaseNotes}";
+                    _checkUpdate.Text = "重新检查";
+                    _checkUpdate.Enabled = true;
+                    _downloadUpdate.Visible = !string.IsNullOrEmpty(update.SetupDownloadUrl);
+                    _openReleaseBrowser.Visible = !string.IsNullOrEmpty(update.HtmlUrl);
+                }
+            }
+            catch (Exception ex)
+            {
+                _updateCallout.Level = NoticeLevel.Error;
+                _updateCallout.Title = "检查更新失败";
+                _updateCallout.Text = $"{ex.Message}。可稍后重试或在浏览器中查看。";
+                _checkUpdate.Text = "检查更新";
+                _checkUpdate.Enabled = true;
+                _openReleaseBrowser.Visible = true;
+            }
+            FitToContent();
+        };
+
+        _openReleaseBrowser.Click += (_, _) =>
+        {
+            var url = _currentUpdate?.HtmlUrl ?? SenseNovaDefaults.RepositoryUrl;
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+        };
+
+        _downloadUpdate.Click += async (_, _) =>
+        {
+            if (_currentUpdate is not { } update) return;
+            _downloadUpdate.Enabled = false;
+            _downloadUpdate.Text = "下载中...";
+            _checkUpdate.Enabled = false;
+            _updateCallout.Level = NoticeLevel.Info;
+            _updateCallout.Title = $"正在下载 {update.LatestVersion}";
+            _updateCallout.Text = "正在下载安装包并校验 SHA-256...";
+            FitToContent();
+
+            try
+            {
+                var progress = new Progress<double>(p =>
+                {
+                    if (IsDisposed) return;
+                    _updateCallout.Text = $"正在下载安装包并校验 SHA-256... ({p * 100:0.#}%)";
+                });
+                var service = model.UpdateService ?? new GitHubUpdateService();
+                var setupPath = await service.DownloadAndVerifySetupAsync(update, progress);
+
+                _updateCallout.Level = NoticeLevel.Success;
+                _updateCallout.Title = "下载并校验成功";
+                _updateCallout.Text = "已成功核验 SHA-256！即将启动安装程序更新应用，并退出当前面板...";
+                FitToContent();
+                await Task.Delay(1500);
+
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(setupPath) { UseShellExecute = true });
+                Application.Exit();
+            }
+            catch (Exception ex)
+            {
+                _updateCallout.Level = NoticeLevel.Error;
+                _updateCallout.Title = "下载或更新失败";
+                _updateCallout.Text = $"{ex.Message}。建议直接点击浏览器查看手动下载。";
+                _downloadUpdate.Enabled = true;
+                _downloadUpdate.Text = "重试下载";
+                _checkUpdate.Enabled = true;
+                FitToContent();
+            }
+        };
+
         SetBody(body);
         AddButton("完成", ButtonKind.Primary, DialogResult.OK, "Done");
         Theme.Changed += Rechrome;

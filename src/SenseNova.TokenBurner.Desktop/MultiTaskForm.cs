@@ -3,6 +3,7 @@ using SenseNova.TokenBurner.Desktop.Ui;
 using SenseNova.TokenBurner.Desktop.ViewModels;
 using SenseNova.TokenBurner.Infrastructure;
 using SenseNova.TokenBurner.Infrastructure.Storage;
+using SenseNova.TokenBurner.Infrastructure.Updates;
 
 namespace SenseNova.TokenBurner.Desktop;
 
@@ -886,8 +887,12 @@ public sealed class MultiTaskForm : Form
     private async Task ShowSettingsAsync()
     {
         var version = Application.ProductVersion.Split('+')[0];
+        var updateService = _coordinator.IsMockMode
+            ? (IAppUpdateService)new MockUpdateService()
+            : new GitHubUpdateService();
         var model = new SettingsModel(Theme.Mode, _coordinator.Limiter.Maximum, PerKeyLimit(), _coordinator.CanChangeConcurrency,
-            _coordinator.Workspace.Storage.RootDirectory, version, SenseNovaDefaults.BaseUrl, SenseNovaDefaults.RebateModel, _coordinator.IsMockMode);
+            _coordinator.Workspace.Storage.RootDirectory, version, SenseNovaDefaults.BaseUrl, SenseNovaDefaults.RebateModel, _coordinator.IsMockMode,
+            updateService);
         using var dialog = new SettingsDialog(model, mode => ApplyThemeMode(mode, save: true), async (shared, perKey) =>
         {
             try
