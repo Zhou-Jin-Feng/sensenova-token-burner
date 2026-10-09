@@ -39,6 +39,9 @@ public sealed class RunScheduler
 
     /// <summary>首次或重新启用均须显式调用，立即开始首轮；0% 不启动计划或请求。</summary>
     public bool Enable(ScheduleConfiguration configuration, CancellationToken cancellationToken = default)
+        => Enable(configuration, null, cancellationToken);
+
+    public bool Enable(ScheduleConfiguration configuration, RunSnapshot? progress, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         configuration.Validate();
@@ -63,7 +66,7 @@ public sealed class RunScheduler
                 return true;
             }
             // 先做引擎预检，再公开启用；入口失败不留下半启动计划。
-            _activeRun = _engine.RunAsync(configuration.Run, cancellationToken);
+            _activeRun = progress is not null ? _engine.RunWithProgressAsync(configuration.Run, progress, cancellationToken) : _engine.RunAsync(configuration.Run, cancellationToken);
             _snapshot = new(ScheduleState.Enabled, configuration, now, next, 1, 0, null, null);
             _loop = Task.Run(() => ExecuteScheduleAsync(session));
             return true;

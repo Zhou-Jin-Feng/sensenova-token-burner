@@ -179,7 +179,8 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
     private async Task<TaskRuntime> AddRuntimeAsync(TaskConfiguration task)
     {
         var slot = new ExecutorSlot();
-        var session = new PersistentRunSession(slot, _workspace.Storage.RunState(task), timeProvider: _time, limiter: Limiter);
+        var protection = new RunProtectionOptions { RequestTimeout = TimeSpan.FromMinutes(6) };
+        var session = new PersistentRunSession(slot, _workspace.Storage.RunState(task), protection: protection, timeProvider: _time, limiter: Limiter);
         var runtime = new TaskRuntime(task, session, slot) { SavedNextUtc = null };
         runtime.IsWeeklyQuotaPaused = r => IsWeeklyQuotaPaused(r);
         session.CanStartSchedule = () => CanScheduleRun(runtime);
@@ -493,19 +494,19 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
     public Task RunAllAsync() => BeginBatch(false, null);
     public Task RunOrContinueAllAsync() => BeginBatch(true, null);
     public Task RunOrContinueAllAsync(IReadOnlyDictionary<Guid, RunStartGuard> guards) => BeginBatch(true, guards);
-    public Task RunOrContinueSelectedAsync(IEnumerable<Guid> ids) => RunOrContinueSelectedAsync(ids, CaptureRunGuards(ids));
+    public Task RunOrContinueSelectedAsync(IEnumerable<Guid> ids, bool schedule = false) => RunOrContinueSelectedAsync(ids, CaptureRunGuards(ids), schedule);
     /// <summary>按确认前捕获的护栏批量运行/继续：确认期间已收尾的任务不会被当作新一轮重新开始。</summary>
-    public Task RunOrContinueSelectedAsync(IEnumerable<Guid> ids, IReadOnlyDictionary<Guid, RunStartGuard> guards)
+    public Task RunOrContinueSelectedAsync(IEnumerable<Guid> ids, IReadOnlyDictionary<Guid, RunStartGuard> guards, bool schedule = false)
     {
         var selected = ids.ToHashSet();
-        return BeginBatch(true, guards.Where(pair => selected.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value), selected);
+        return BeginBatch(true, guards.Where(pair => selected.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value), selected, schedule);
     }
-    private Task BeginBatch(bool continueRemaining, IReadOnlyDictionary<Guid, RunStartGuard>? guards, IReadOnlySet<Guid>? selected = null)
+    private Task BeginBatch(bool continueRemaining, IReadOnlyDictionary<Guid, RunStartGuard>? guards, IReadOnlySet<Guid>? selected = null, bool schedule = false)
     {
-        if (_batchActive) return RunBatchAsync(continueRemaining, guards);
-        return _batchOperation = RunBatchAsync(continueRemaining, guards, selected);
+        if (_batchActive) return RunBatchAsync(continueRemaining, guards, selected, schedule);
+        return _batchOperation = RunBatchAsync(continueRemaining, guards, selected, schedule);
     }
-    private async Task RunBatchAsync(bool continueRemaining, IReadOnlyDictionary<Guid, RunStartGuard>? guards, IReadOnlySet<Guid>? selected = null)
+    private async Task RunBatchAsync(bool continueRemaining, IReadOnlyDictionary<Guid, RunStartGuard>? guards, IReadOnlySet<Guid>? selected = null, bool schedule = false)
     {
         if (_batchActive)
         {
@@ -528,8 +529,8 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
                     ? captured : CaptureRunGuard(row.Configuration.Id);
                 return continueRemaining
                     ? RunOrContinueAsync(row.Configuration.Id, expectedLifecycleVersion: guard.LifecycleVersion,
-                        waitOnlyIfPreviouslyBusy: guard.WaitOnlyIfPreviouslyBusy)
-                    : StartOrAwaitAsync(row, guard);
+                        waitOnlyIfPreviouslyBusy: guard.WaitOnlyIfPreviouslyBusy, schedule: schedule)
+                    : StartOrAwaitAsync(row, guard, schedule: schedule);
             }));
         }
         finally
@@ -542,7 +543,7 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
             Notify(BatchSummary, other > 0 ? NoticeLevel.Warning : completed == rows.Length ? NoticeLevel.Success : NoticeLevel.Info);
         }
     }
-    private async Task StartOrAwaitAsync(TaskRuntime row, RunStartGuard guard)
+    private async Task StartOrAwaitAsync(TaskRuntime row, RunStartGuard guard, bool schedule = false)
     {
         Task? validation = null;
         lock (_runtimeGate)
@@ -576,11 +577,11 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
         if (row.Preparing) await row.StartedOperation.Task;
         if (existing)
             await row.Session.WaitForCompletionAsync();
-        else await StartAsync(row.Configuration.Id, expectedLifecycleVersion: guard.LifecycleVersion,
+        else await StartAsync(row.Configuration.Id, schedule: schedule, expectedLifecycleVersion: guard.LifecycleVersion,
             waitOnlyIfPreviouslyBusy: guard.WaitOnlyIfPreviouslyBusy);
     }
     /// <summary>同一个按钮根据状态开始、恢复暂停或继续剩余；未知记录不自动确认。</summary>
-    public async Task RunOrContinueAsync(Guid id, bool reviewed = false, int? expectedLifecycleVersion = null, bool waitOnlyIfPreviouslyBusy = false)
+    public async Task RunOrContinueAsync(Guid id, bool reviewed = false, int? expectedLifecycleVersion = null, bool waitOnlyIfPreviouslyBusy = false, bool schedule = false)
     {
         var row = Find(id);
         Task? validation = null;
@@ -658,7 +659,7 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
             return;
         }
         await StartAsync(id, continueRemaining: row.HasRemainder, reviewed: reviewed,
-            expectedLifecycleVersion: observedVersion, waitOnlyIfPreviouslyBusy: waitOnlyIfPreviouslyBusy);
+            expectedLifecycleVersion: observedVersion, waitOnlyIfPreviouslyBusy: waitOnlyIfPreviouslyBusy, schedule: schedule);
     }
     public async Task ResetAsync(Guid id, bool reviewed = false)
     {
@@ -784,7 +785,7 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
             lock (_keysGate) inputTask = _input ??= _createInput(_lifetime.Token);
             var input = await inputTask.WaitAsync(preparationToken);
             preparationToken.ThrowIfCancellationRequested();
-            row.Executor.Inner = new CompletionRunExecutor(_completion, credential, model, input);
+            row.Executor.Inner = new CompletionRunExecutor(_completion, credential, model, input) { AutoRetryTransientErrors = !IsMockMode };
             var target = continueRemaining ? row.Snapshot.Parameters!.TargetTokens : row.Configuration.TargetTokens;
             var parameters = Parameters(row, target, modelId);
             await row.StartGate.WaitAsync(preparationToken);
@@ -794,8 +795,8 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
                 if (!IsCurrentStart(row, expectedLifecycleVersion, preparationToken)) return;
                 if (schedule)
                 {
-                    if (continueRemaining) throw new InvalidOperationException("请先继续剩余目标，再手动启用后续计划。");
-                    await row.Session.EnableScheduleAsync(new(parameters, row.Configuration.IntervalHours), preparationToken);
+                    var progress = continueRemaining && row.HasRemainder ? row.Snapshot : null;
+                    await row.Session.EnableScheduleAsync(new(parameters, row.Configuration.IntervalHours), progress, preparationToken);
                     lock (_runtimeGate) row.Preparing = false;
                     await PersistPlanAsync(row);
                     return;
@@ -909,8 +910,6 @@ public sealed class MultiTaskCoordinator : IAsyncDisposable
     {
         foreach (var row in _tasks.ToArray())
         {
-            if (row.Session.CurrentRun.State == RunState.AwaitingReview)
-                await StopAsync(row.Configuration.Id);
             NotifyFinished(row);
             if (row.Session.Schedule.State != ScheduleState.Enabled && !row.Active) ReleaseKey(row);
             // 已保存但本进程未启用的计划不能被重开后的第一次刷新清空。

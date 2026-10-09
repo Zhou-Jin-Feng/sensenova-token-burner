@@ -95,7 +95,10 @@ public sealed class PersistentRunSession
         finally { _controls.Release(); }
     }
 
-    public async Task<bool> EnableScheduleAsync(ScheduleConfiguration configuration, CancellationToken cancellationToken = default)
+    public Task<bool> EnableScheduleAsync(ScheduleConfiguration configuration, CancellationToken cancellationToken = default)
+        => EnableScheduleAsync(configuration, null, cancellationToken);
+
+    public async Task<bool> EnableScheduleAsync(ScheduleConfiguration configuration, RunSnapshot? progress, CancellationToken cancellationToken = default)
     {
         await _controls.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -103,7 +106,7 @@ public sealed class PersistentRunSession
             EnsureInactive();
             await SavePlanAsync(configuration, configuration.Run.TargetTokens > 0, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            return _scheduler.Enable(configuration, cancellationToken);
+            return _scheduler.Enable(configuration, progress, cancellationToken);
         }
         finally { _controls.Release(); }
     }

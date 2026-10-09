@@ -1035,4 +1035,28 @@ public sealed class MultiTaskMvpTests
         await coordinator.DisablePlanAsync(row.Configuration.Id);
     }
 
+
+    [TestMethod, DoNotParallelize]
+    public Task RunConfirmationCanEnableScheduleAndContinueRemaining()
+        => WithPanelAsync(async (form, coordinator, api) =>
+        {
+            api.Delay = TimeSpan.FromMilliseconds(20);
+            var row = await coordinator.AddAsync(Key1, Config("key-1", 100));
+            await UntilAsync(() => form.SelectedTaskId == row.Configuration.Id);
+
+            // 模拟在运行确认弹窗中勾选了“同时启用定时”
+            form.Prompts.ConfirmRun = (_, _) =>
+            {
+                form.Prompts.LastEnableScheduleChoice = true;
+                return true;
+            };
+
+            form.Detail.Run.PerformClick();
+            await UntilAsync(() => row.Session.Schedule.State == ScheduleState.Enabled);
+            await UntilAsync(() => row.Active);
+            Assert.AreEqual(ScheduleState.Enabled, row.Session.Schedule.State, "点击运行并勾选后，定时必须直接处于启用状态。");
+            Assert.IsNotNull(row.Session.Schedule.NextRunUtc, "计划下次运行时间必须已生成。");
+            await coordinator.StopAllAsync();
+        });
+
 }

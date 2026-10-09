@@ -10,10 +10,13 @@ namespace SenseNova.TokenBurner.Desktop;
 /// <summary>需要用户确认的交互入口；默认弹出主题化对话框，测试可替换为无界面实现。</summary>
 internal sealed class PanelPrompts
 {
+    public bool LastEnableScheduleChoice { get; set; }
     public Func<IWin32Window, RunPreview, bool> ConfirmRun { get; set; } = (owner, preview) =>
     {
-        using var dialog = new ConfirmDialog(ConfirmDialog.ForRun(preview));
-        return dialog.ShowDialog(owner) == DialogResult.OK;
+        using var dialog = new ConfirmDialog(ConfirmDialog.ForRun(preview, allowEnableSchedule: true));
+        var res = dialog.ShowDialog(owner) == DialogResult.OK;
+        if (res && owner is MultiTaskForm form) form.Prompts.LastEnableScheduleChoice = dialog.EnableScheduleChecked;
+        return res;
     };
     public Func<IWin32Window, string, bool> ConfirmReset { get; set; } = (owner, scope) =>
     {
@@ -688,16 +691,19 @@ public sealed class MultiTaskForm : Form
         var guard = _coordinator.CaptureRunGuard(id);
         var willStartOrResume = row.Validating || row.Session.CurrentRun.State == RunState.Paused
             || (!row.Active && row.Session.Schedule.State != ScheduleState.Enabled);
+        Prompts.LastEnableScheduleChoice = false;
         if (willStartOrResume && !Prompts.ConfirmRun(this, _coordinator.PreviewRun(id)))
         {
             SetNotice("已取消运行，未发出请求。", NoticeLevel.Info, id);
             return;
         }
+        var schedule = Prompts.LastEnableScheduleChoice;
+        Prompts.LastEnableScheduleChoice = false;
         var reviewed = review.Checked;
         review.Checked = false;
-        SetNotice($"{row.Configuration.DisplayName}：开始运行/继续；已有进度会继续剩余目标。", NoticeLevel.Info, id);
+        SetNotice($"{row.Configuration.DisplayName}：开始运行/继续；已有进度会继续剩余目标。" + (schedule ? "（已同时启用定时）" : ""), NoticeLevel.Info, id);
         _liveTaskId = id;
-        var operation = _coordinator.RunOrContinueAsync(id, reviewed, guard.LifecycleVersion, guard.WaitOnlyIfPreviouslyBusy);
+        var operation = _coordinator.RunOrContinueAsync(id, reviewed, guard.LifecycleVersion, guard.WaitOnlyIfPreviouslyBusy, schedule: schedule);
         UpdateView();
         await operation;
         if (!string.IsNullOrEmpty(row.Message)) SetNotice($"{row.Configuration.DisplayName}：{row.Message}", row.MessageLevel, id);
@@ -723,7 +729,7 @@ public sealed class MultiTaskForm : Form
         }
         if (!Prompts.ConfirmReset(this, $"“{row.Configuration.DisplayName}”")) return;
         var reviewed = needsReview && review.Checked;
-        review.Checked = false;
+        _detail.Overview.ReviewConfirm.Checked = false;
         SetNotice($"{row.Configuration.DisplayName}：正在收尾并重置，原记录会归档。", NoticeLevel.Info, row.Configuration.Id);
         await _coordinator.ResetAsync(row.Configuration.Id, reviewed);
     }
@@ -784,13 +790,16 @@ public sealed class MultiTaskForm : Form
         if (!await ResolveDirtyAsync()) return;
         // 护栏必须在展示确认之前捕获：确认期间已收尾的任务只能“等待收尾”，不能被当成新一轮重新开始。
         var guards = _coordinator.CaptureRunGuards(ids);
+        Prompts.LastEnableScheduleChoice = false;
         if (!Prompts.ConfirmRun(this, _coordinator.PreviewSelected(ids, continueRemaining: true)))
         {
             SetNotice("已取消运行所选任务，未发出请求。", NoticeLevel.Info);
             return;
         }
-        SetNotice($"开始运行/继续 {ids.Count} 个所选任务，共享请求上限；结果未知的任务需要单独核查。", NoticeLevel.Info);
-        await _coordinator.RunOrContinueSelectedAsync(ids, guards);
+        var schedule = Prompts.LastEnableScheduleChoice;
+        Prompts.LastEnableScheduleChoice = false;
+        SetNotice($"开始运行/继续 {ids.Count} 个所选任务，共享请求上限；结果未知的任务需要单独核查。" + (schedule ? "（已同时启用定时）" : ""), NoticeLevel.Info);
+        await _coordinator.RunOrContinueSelectedAsync(ids, guards, schedule: schedule);
     }
 
     private async Task BatchPauseAsync()

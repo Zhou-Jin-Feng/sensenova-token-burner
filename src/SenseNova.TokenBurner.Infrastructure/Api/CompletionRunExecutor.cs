@@ -11,6 +11,7 @@ public sealed class CompletionRunExecutor : IRunRequestExecutor
     private readonly ModelInfo _model;
     private readonly CompletionRequest _request;
 
+
     public CompletionRunExecutor(ISenseNovaCompletionClient client, string credential, ModelInfo model, CompletionRequest request)
     {
         ArgumentNullException.ThrowIfNull(client);
@@ -28,10 +29,33 @@ public sealed class CompletionRunExecutor : IRunRequestExecutor
             throw new ArgumentException("运行模型或每请求预留量与完整请求不匹配。");
     }
 
-    public Task<TokenUsage> ExecuteAsync(RunParameters parameters, CancellationToken cancellationToken)
+    public bool AutoRetryTransientErrors { get; set; } = false;
+
+    public async Task<TokenUsage> ExecuteAsync(RunParameters parameters, CancellationToken cancellationToken)
     {
         ValidateParameters(parameters);
-        return _client.CompleteAsync(_credential, _model, _request, cancellationToken);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                return await _client.CompleteAsync(_credential, _model, _request, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (SenseNovaApiException ex) when (!AutoRetryTransientErrors || ex.Kind is ApiFailureKind.Authentication or ApiFailureKind.InvalidRequest or ApiFailureKind.ModelUnavailable)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                if (!AutoRetryTransientErrors) throw;
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     internal static void ValidateRequest(ModelInfo model, CompletionRequest request)

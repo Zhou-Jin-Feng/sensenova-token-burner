@@ -19,7 +19,7 @@ public sealed class HttpProtectionTests
         { Content = new StringContent("untrusted: NotSent, retryAllowed, " + MockCredential.Value, Encoding.UTF8, "application/json") };
     private static RunParameters Parameters => new(Model.Id, 1000) { RequestTokenReservation = 100 };
     private static SingleRunEngine Engine(HttpClient http, TimeProvider? time = null) => new(
-        new CompletionRunExecutor(new SenseNovaHttpClient(http), MockCredential.Value, Model, new("模拟输入", 32, 50)), timeProvider: time);
+        new CompletionRunExecutor(new SenseNovaHttpClient(http), MockCredential.Value, Model, new("模拟输入", 32, 50)) { AutoRetryTransientErrors = false }, timeProvider: time);
 
     [TestMethod]
     [DataRow(400, RequestDelivery.Rejected)]

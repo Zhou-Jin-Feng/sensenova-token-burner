@@ -177,10 +177,13 @@ internal sealed class FactTable : UiControl, IHeightForWidth
 
 internal sealed record ConfirmSpec(string Caption, string Title, string? Lead, IReadOnlyList<KeyValuePair<string, string>> Facts,
     string? SecondaryTitle, IReadOnlyList<KeyValuePair<string, string>> SecondaryFacts, IReadOnlyList<(NoticeLevel Level, string Text)> Notes,
-    string ConfirmText, bool Danger);
+    string ConfirmText, bool Danger, bool AllowEnableSchedule = false, bool ScheduleInitiallyChecked = false);
 
 internal sealed class ConfirmDialog : DialogForm
 {
+    private readonly UiToggle? _enableSchedule;
+    public bool EnableScheduleChecked => _enableSchedule?.Checked ?? false;
+
     public ConfirmDialog(ConfirmSpec spec) : base(spec.Caption, 540)
     {
         var body = new StackBody();
@@ -193,20 +196,30 @@ internal sealed class ConfirmDialog : DialogForm
             body.Add(new FactTable(spec.SecondaryFacts), 16);
         }
         foreach (var (level, text) in spec.Notes) body.Add(new UiCallout { Level = level, Text = text }, 10);
+        if (spec.AllowEnableSchedule)
+        {
+            _enableSchedule = new UiToggle("同时启用定时（跑完本轮后按设定的间隔自动开始下一轮）", ToggleStyle.Check, "EnableScheduleToggle")
+            {
+                Checked = spec.ScheduleInitiallyChecked
+            };
+            body.Add(_enableSchedule, 14);
+        }
         SetBody(body);
         AddButton(spec.ConfirmText, spec.Danger ? ButtonKind.Danger : ButtonKind.Primary, DialogResult.OK, "Confirm");
         AddButton("取消", ButtonKind.Secondary, DialogResult.Cancel, "Cancel");
         AcceptButton = null;
     }
 
-    public static ConfirmSpec ForRun(RunPreview preview)
+    public static ConfirmSpec ForRun(RunPreview preview, bool allowEnableSchedule = false, bool scheduleInitiallyChecked = false)
     {
         var hasExceededWarning = preview.Risks.Any(r => r.Contains("超额警告", StringComparison.Ordinal));
         return new("确认运行", preview.Title,
             "开始前请确认目标和单笔请求规模。确认后才会联网发送请求。", preview.Facts, "每笔请求", preview.RequestFacts,
             preview.Risks.Select(risk => (risk.Contains("超过", StringComparison.Ordinal) || risk.Contains("超额", StringComparison.Ordinal) || risk.Contains("警告", StringComparison.Ordinal) ? NoticeLevel.Warning : NoticeLevel.Info, risk)).ToList(),
             hasExceededWarning ? "超额并继续运行" : "确认运行",
-            hasExceededWarning);
+            hasExceededWarning,
+            allowEnableSchedule,
+            scheduleInitiallyChecked);
     }
 }
 
