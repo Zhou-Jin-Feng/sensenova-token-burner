@@ -76,25 +76,8 @@ public sealed class GitHubUpdateService : IAppUpdateService
         Directory.CreateDirectory(tempDir);
         var setupPath = Path.Combine(tempDir, update.SetupFileName ?? "setup.exe");
 
-        string? expectedHash = null;
-        if (!string.IsNullOrEmpty(update.ChecksumDownloadUrl))
-        {
-            try
-            {
-                using var csReq = new HttpRequestMessage(HttpMethod.Get, update.ChecksumDownloadUrl);
-                csReq.Headers.UserAgent.ParseAdd($"SenseNova-TokenBurner/{update.CurrentVersion}");
-                using var csResp = await _http.SendAsync(csReq, cancellationToken).ConfigureAwait(false);
-                if (csResp.IsSuccessStatusCode)
-                {
-                    var checksumContent = await csResp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                    expectedHash = ParseChecksum(checksumContent, update.SetupFileName);
-                }
-            }
-            catch (Exception) when (!cancellationToken.IsCancellationRequested)
-            {
-                // 哈希列表拉取失败不强行阻断，视网络情况继续
-            }
-        }
+        // 拿不到预期哈希就不下载安装包，避免启动未经核验的程序
+        var expectedHash = await FetchExpectedHashAsync(update, cancellationToken).ConfigureAwait(false);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, update.SetupDownloadUrl);
         request.Headers.UserAgent.ParseAdd($"SenseNova-TokenBurner/{update.CurrentVersion}");
@@ -120,18 +103,49 @@ public sealed class GitHubUpdateService : IAppUpdateService
             await fileStream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        if (!string.IsNullOrEmpty(expectedHash))
+        string actualHash;
+        await using (var verifyStream = File.OpenRead(setupPath))
         {
-            await using var verifyStream = File.OpenRead(setupPath);
-            var actualHash = Convert.ToHexStringLower(await SHA256.HashDataAsync(verifyStream, cancellationToken).ConfigureAwait(false));
-            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-            {
-                try { File.Delete(setupPath); } catch { }
-                throw new InvalidOperationException($"安装包 SHA-256 校验失败（预期 {expectedHash}，实际 {actualHash}），文件已移除。");
-            }
+            actualHash = Convert.ToHexStringLower(await SHA256.HashDataAsync(verifyStream, cancellationToken).ConfigureAwait(false));
+        }
+        if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+        {
+            try { File.Delete(setupPath); } catch { }
+            throw new InvalidOperationException($"安装包 SHA-256 校验失败（预期 {expectedHash}，实际 {actualHash}），文件已移除。");
         }
 
         return setupPath;
+    }
+
+    private async Task<string> FetchExpectedHashAsync(AppUpdateInfo update, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(update.ChecksumDownloadUrl))
+            throw new InvalidOperationException("该版本未随附 SHA256SUMS.txt，无法核验安装包，已取消自动安装");
+
+        string? checksumContent = null;
+        int? failedStatus = null;
+        try
+        {
+            using var csReq = new HttpRequestMessage(HttpMethod.Get, update.ChecksumDownloadUrl);
+            csReq.Headers.UserAgent.ParseAdd($"SenseNova-TokenBurner/{update.CurrentVersion}");
+            using var csResp = await _http.SendAsync(csReq, cancellationToken).ConfigureAwait(false);
+            if (csResp.IsSuccessStatusCode)
+                checksumContent = await csResp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            else
+                failedStatus = (int)csResp.StatusCode;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException($"获取 SHA256SUMS.txt 失败（{ex.Message}），无法核验安装包，已取消自动安装", ex);
+        }
+
+        if (failedStatus is not null)
+            throw new InvalidOperationException($"获取 SHA256SUMS.txt 失败（HTTP {failedStatus}），无法核验安装包，已取消自动安装");
+
+        var expectedHash = ParseChecksum(checksumContent ?? "", update.SetupFileName);
+        if (string.IsNullOrEmpty(expectedHash))
+            throw new InvalidOperationException($"SHA256SUMS.txt 中没有 {update.SetupFileName} 的哈希，无法核验安装包，已取消自动安装");
+        return expectedHash;
     }
 
         public static string? ParseChecksum(string checksumText, string? targetFileName)

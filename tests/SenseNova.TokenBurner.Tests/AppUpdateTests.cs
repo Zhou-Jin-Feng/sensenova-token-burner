@@ -96,6 +96,135 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa *OtherFile.exe
         Assert.IsFalse(browserBtn.Visible, "初始状态下浏览器查看按钮应隐藏。");
     }
 
+    private const string SetupName = "SenseNova.TokenBurner-9.9.9-win-x64-setup.exe";
+    private const string SetupUrl = "https://example.test/setup.exe";
+    private const string ChecksumUrl = "https://example.test/SHA256SUMS.txt";
+    private static readonly byte[] SetupBytes = "fake installer payload"u8.ToArray();
+    private static readonly string SetupHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(SetupBytes));
+
+    [TestMethod]
+    public async Task DownloadRejectsReleaseWithoutChecksumAsset()
+    {
+        await AssertDownloadRejectedAsync(checksumUrl: null, checksumResponse: null, "SHA256SUMS.txt");
+    }
+
+    [TestMethod]
+    public async Task DownloadRejectsWhenChecksumFetchThrows()
+    {
+        await AssertDownloadRejectedAsync(ChecksumUrl, () => throw new HttpRequestException("network down"), "SHA256SUMS.txt");
+    }
+
+    [TestMethod]
+    public async Task DownloadRejectsWhenChecksumFetchReturnsErrorStatus()
+    {
+        await AssertDownloadRejectedAsync(ChecksumUrl, () => new HttpResponseMessage(System.Net.HttpStatusCode.NotFound), "HTTP 404");
+    }
+
+    [TestMethod]
+    public async Task DownloadRejectsWhenSetupIsNotListedInChecksums()
+    {
+        var content = $"{SetupHash}  SomeOtherFile.exe\n";
+        await AssertDownloadRejectedAsync(ChecksumUrl, () => new HttpResponseMessage { Content = new StringContent(content) }, SetupName);
+    }
+
+    [TestMethod]
+    public async Task DownloadDeletesSetupOnHashMismatch()
+    {
+        var version = NewTestVersion();
+        var content = $"{new string('0', 64)}  {SetupName}\n";
+        var (service, setupRequests) = CreateService(() => new HttpResponseMessage { Content = new StringContent(content) });
+        try
+        {
+            var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                () => service.DownloadAndVerifySetupAsync(CreateUpdate(version, ChecksumUrl)));
+            StringAssert.Contains(ex.Message, "校验失败");
+            Assert.AreEqual(1, setupRequests());
+            Assert.IsFalse(File.Exists(SetupPathFor(version)), "哈希不匹配时必须删除已下载的安装包。");
+        }
+        finally
+        {
+            CleanupVersionDir(version);
+        }
+    }
+
+    [TestMethod]
+    public async Task DownloadReturnsVerifiedSetupOnHashMatch()
+    {
+        var version = NewTestVersion();
+        var content = $"{SetupHash.ToUpperInvariant()} *{SetupName}\n";
+        var (service, setupRequests) = CreateService(() => new HttpResponseMessage { Content = new StringContent(content) });
+        try
+        {
+            var path = await service.DownloadAndVerifySetupAsync(CreateUpdate(version, ChecksumUrl));
+            Assert.AreEqual(SetupPathFor(version), path);
+            Assert.AreEqual(1, setupRequests());
+            CollectionAssert.AreEqual(SetupBytes, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            CleanupVersionDir(version);
+        }
+    }
+
+    private static async Task AssertDownloadRejectedAsync(string? checksumUrl, Func<HttpResponseMessage>? checksumResponse, string expectedMessagePart)
+    {
+        var version = NewTestVersion();
+        var (service, setupRequests) = CreateService(checksumResponse ?? (() => throw new AssertFailedException("不应请求哈希列表。")));
+        try
+        {
+            var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                () => service.DownloadAndVerifySetupAsync(CreateUpdate(version, checksumUrl)));
+            StringAssert.Contains(ex.Message, expectedMessagePart);
+            StringAssert.Contains(ex.Message, "无法核验安装包");
+            Assert.AreEqual(0, setupRequests(), "拿不到预期哈希时不应下载安装包。");
+            Assert.IsFalse(File.Exists(SetupPathFor(version)), "拿不到预期哈希时不应留下安装包。");
+        }
+        finally
+        {
+            CleanupVersionDir(version);
+        }
+    }
+
+    private static (GitHubUpdateService Service, Func<int> SetupRequests) CreateService(Func<HttpResponseMessage> checksumResponse)
+    {
+        var setupRequests = 0;
+        var handler = new TestHttpHandler((request, _) =>
+        {
+            var url = request.RequestUri!.ToString();
+            if (url == ChecksumUrl) return Task.FromResult(checksumResponse());
+            if (url == SetupUrl)
+            {
+                Interlocked.Increment(ref setupRequests);
+                return Task.FromResult(new HttpResponseMessage { Content = new ByteArrayContent(SetupBytes) });
+            }
+            throw new AssertFailedException($"意外请求：{url}");
+        });
+        return (new GitHubUpdateService(new HttpClient(handler)), () => Volatile.Read(ref setupRequests));
+    }
+
+    private static AppUpdateInfo CreateUpdate(string version, string? checksumUrl) => new(
+        "1.0.0",
+        version,
+        true,
+        version,
+        "",
+        "https://example.test/release",
+        SetupUrl,
+        SetupName,
+        checksumUrl);
+
+    private static string NewTestVersion() => $"v9.9.9-test-{Guid.NewGuid():N}";
+
+    private static string VersionDir(string version)
+        => Path.Combine(Path.GetTempPath(), "SenseNova.TokenBurner", "Updates", version.TrimStart('v', 'V'));
+
+    private static string SetupPathFor(string version) => Path.Combine(VersionDir(version), SetupName);
+
+    private static void CleanupVersionDir(string version)
+    {
+        try { Directory.Delete(VersionDir(version), recursive: true); } catch (DirectoryNotFoundException) { }
+    }
+
     private static T? FindControl<T>(Control parent, string name) where T : Control
     {
         if (parent.Name == name && parent is T match) return match;
